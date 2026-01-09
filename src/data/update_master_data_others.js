@@ -1,0 +1,61 @@
+import XLSX from 'xlsx';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const csvPath = path.join(__dirname, 'Other material Master data.csv');
+const masterDataPath = path.join(__dirname, 'masterData.js');
+
+try {
+    console.log("Reading CSV file...");
+    const workbook = XLSX.readFile(csvPath);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawData = XLSX.utils.sheet_to_json(sheet);
+
+    console.log(`Parsed ${rawData.length} items. Formatting...`);
+
+    // 2. Format Data
+    const formattedData = rawData.map((item, index) => {
+        const id = `OT-${String(index + 1).padStart(5, '0')}`;
+        // Fallback to finding keys if exact names don't match
+        const name = item["Material Name"] || item["Name"] || item["Description"] || Object.values(item)[0] || "Unknown";
+        const code = item["Material Code"] || item["Code"] || "";
+        const category = item["Item Category"] || item["Category"] || "General";
+        const uom = item["UOM"] || item["Unit"] || "NOS";
+
+        return {
+            id: id,
+            name: String(name).trim(),
+            code: String(code).trim(),
+            type: "OTHER",
+            category: String(category).trim(),
+            uom: String(uom).trim()
+        };
+    });
+
+    // 3. Read masterData.js
+    let masterDataContent = fs.readFileSync(masterDataPath, 'utf-8');
+
+    // 4. Create Replacement String
+    const jsonString = JSON.stringify(formattedData, null, 4);
+
+    // 5. Replace OTHERS array
+    const regex = /"OTHERS":\s*\[[\s\S]*?\]/;
+
+    if (!regex.test(masterDataContent)) {
+        throw new Error("Could not find OTHERS array in masterData.js");
+    }
+
+    console.log("Injecting into masterData.js...");
+    const newContent = masterDataContent.replace(regex, `"OTHERS": ${jsonString}`);
+
+    // 6. Write back
+    fs.writeFileSync(masterDataPath, newContent, 'utf-8');
+
+    console.log(`Successfully updated masterData.js with ${formattedData.length} Other Materials.`);
+
+} catch (error) {
+    console.error("Error updating master data:", error);
+}
