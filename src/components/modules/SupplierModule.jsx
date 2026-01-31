@@ -137,12 +137,17 @@ const SupplierModule = ({ showAlert, showConfirm }) => {
         setIsModalOpen(true);
     };
 
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const handleSave = () => {
+        if (isSubmitting) return;
+
         if (activeTab === 'SUPPLIERS') {
             if (!supplierForm.entityName) {
                 showAlert("Entity Name is required", "error");
                 return;
             }
+            setIsSubmitting(true);
             if (editingItem) {
                 updateMasterItem('SUPPLIERS', editingItem.id, supplierForm);
                 showAlert("Supplier updated successfully");
@@ -156,6 +161,7 @@ const SupplierModule = ({ showAlert, showConfirm }) => {
                 showAlert("PO Number and Supplier are required", "error");
                 return;
             }
+            setIsSubmitting(true);
             if (editingItem) {
                 updateMasterItem('PURCHASE_ORDERS', editingItem.id, poForm);
                 showAlert("PO updated successfully");
@@ -165,6 +171,7 @@ const SupplierModule = ({ showAlert, showConfirm }) => {
             }
         }
         setIsModalOpen(false);
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleDelete = (id) => {
@@ -407,8 +414,8 @@ const SupplierModule = ({ showAlert, showConfirm }) => {
                                                 <td className="px-6 py-4 text-slate-600">{item.date}</td>
                                                 <td className="px-6 py-4">
                                                     <span className={`px-2 py-1 rounded-md text-xs font-medium border ${item.status === 'Open' ? 'bg-green-50 text-green-700 border-green-200' :
-                                                            item.status === 'Closed' ? 'bg-slate-100 text-slate-600 border-slate-200' :
-                                                                'bg-yellow-50 text-yellow-700 border-yellow-200'
+                                                        item.status === 'Closed' ? 'bg-slate-100 text-slate-600 border-slate-200' :
+                                                            'bg-yellow-50 text-yellow-700 border-yellow-200'
                                                         }`}>
                                                         {item.status}
                                                     </span>

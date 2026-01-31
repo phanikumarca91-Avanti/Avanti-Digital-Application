@@ -153,7 +153,11 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
             setSoItems(prev => prev.filter(item => item.id !== id));
         }
     };
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const handleSaveSo = async () => {
+        if (isSubmitting) return;
+
         if (!soFormData.customerId || !soFormData.deliveryLocation) {
             showAlert("Please select Customer and Delivery Location.");
             return;
@@ -172,6 +176,7 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
             region: soFormData.deliveryLocation // Map location to region for now or fetch actual region if available
         };
 
+        setIsSubmitting(true);
         try {
             if (soFormData.id) {
                 // Update Existing (id is UUID)
@@ -202,6 +207,8 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
         } catch (error) {
             console.error('Save failed:', error);
             showAlert("Failed to save order. " + (error.message || 'Unknown error'));
+        } finally {
+            setTimeout(() => setIsSubmitting(false), 500);
         }
     };
 
@@ -330,10 +337,14 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
     };
 
     const handleSaveCustomer = () => {
+        if (isSubmitting) return;
+
         if (!formData.entityName) {
             showAlert("Customer Name is required.");
             return;
         }
+
+        setIsSubmitting(true);
         if (isEditing) {
             setCustomers(prev => prev.map(c => c.id === editId ? { ...formData, id: editId } : c));
             showAlert("Customer updated.");
@@ -348,6 +359,7 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
         setIsEditing(false);
         setFormData({});
         setEditId(null);
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleEditCustomer = (customer) => {
@@ -364,6 +376,9 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
 
     // DL Actions
     const handleSaveDl = () => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
         if (dlIsEditing) {
             setDeliveryLocations(prev => prev.map(l => l.id === dlFormData.id ? dlFormData : l));
             showAlert("Delivery Location updated.");
@@ -374,6 +389,7 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
         }
         setDlIsEditing(false);
         setDlFormData({});
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleDeleteDl = (id) => {

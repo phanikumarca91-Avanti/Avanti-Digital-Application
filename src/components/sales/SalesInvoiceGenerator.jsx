@@ -80,9 +80,12 @@ const SalesInvoiceGenerator = ({ plannedVehicles, lots, updateDispatchPlan, remo
     };
 
     const handleReturnToPlan = (vehicleId) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
         if (window.confirm("Return this vehicle to Dispatch Plan? Invoices will not be generated.")) {
             updateDispatchPlan(vehicleId, { stage: 'DRAFT' });
         }
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleCameraTrigger = (vehicleId) => {

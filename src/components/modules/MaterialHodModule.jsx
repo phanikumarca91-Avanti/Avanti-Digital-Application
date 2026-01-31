@@ -39,8 +39,13 @@ const MaterialHodModule = ({ showAlert, showConfirm }) => {
         } : null);
     };
 
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const handleApprove = (vehicleAndId) => {
+        if (isSubmitting) return;
+
         showConfirm(`Approve Provisional GRN ${vehicleAndId.documents?.grn || ''}? This will convert it to a Final GRN.`, () => {
+            setIsSubmitting(true);
             // Logic to convert P-GRN to GRN (remove P- prefix or generate new)
             const finalGrn = (vehicleAndId.documents?.grn || '').replace('P-', '');
 
@@ -56,16 +61,20 @@ const MaterialHodModule = ({ showAlert, showConfirm }) => {
             }, 'HOD Approved. Provisional GRN converted to Final GRN.');
 
             showAlert(`Approved! Final GRN ${finalGrn} generated.`);
+            setTimeout(() => setIsSubmitting(false), 500);
         });
     };
 
     const handleReject = (e) => {
         e.preventDefault();
+        if (isSubmitting) return;
+
         if (!rejectionReason.trim()) {
             showAlert("Rejection reason is mandatory.");
             return;
         }
 
+        setIsSubmitting(true);
         updateStatus(selectedVehicle.id, 'REJECTED_RETURN_PENDING', {
             status: 'REJECTED_RETURN_PENDING',
             hodDecision: 'REJECTED',
@@ -77,6 +86,7 @@ const MaterialHodModule = ({ showAlert, showConfirm }) => {
         setShowRejectModal(false);
         setRejectionReason('');
         setSelectedVehicle(null);
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     return (

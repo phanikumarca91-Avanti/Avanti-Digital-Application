@@ -77,12 +77,17 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, addToDispatchPlan,
 
     // Remove order from plan
     const handleRemoveOrder = async (vehicleId, orderId) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
         // 1. Unassign Order
         await updateOrderStatus(orderId, 'PENDING', { assignedVehicleId: null });
 
         // 2. Check if vehicle is now empty?
         // We assume user wants to keep vehicle unless they remove it.
         // Optional: Auto-remove if empty preference.
+
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     // Explicitly remove vehicle from plan (Add button for this?)

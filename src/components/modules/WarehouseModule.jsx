@@ -138,7 +138,9 @@ const WarehouseModule = ({ showAlert }) => {
     };
 
     const handlePhotoCapture = (imageData) => {
-        if (!currentCam) return;
+        if (!currentCam || isSubmitting) return; // Fix: Prevent double submission
+
+        setIsSubmitting(true);
         const { id, type } = currentCam;
 
         if (type === 'VEHICLE') {
@@ -160,6 +162,7 @@ const WarehouseModule = ({ showAlert }) => {
             }
         }
         showAlert("Photo captured!");
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     const handleAssignBay = (vehicleId, bayId) => {

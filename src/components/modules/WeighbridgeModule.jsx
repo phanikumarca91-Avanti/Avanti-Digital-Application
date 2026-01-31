@@ -155,9 +155,10 @@ const WeighbridgeModule = ({ showAlert }) => {
     };
 
     const handlePhotoCapture = (imageData) => {
-        if (!currentCam) return;
+        if (!currentCam || isSubmitting) return; // Fix: Prevent double submission
         const { id } = currentCam;
 
+        setIsSubmitting(true);
         const vehicle = vehicles.find(v => v.id === id);
         if (vehicle) {
             const currentAttachments = vehicle.attachments || [];
@@ -167,6 +168,7 @@ const WeighbridgeModule = ({ showAlert }) => {
             updateStatus(id, vehicle.status, { attachments: newAttachments });
         }
         showAlert("Photo captured!");
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (

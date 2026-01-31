@@ -42,16 +42,15 @@ const MRClosure = ({ showAlert }) => {
         }));
     };
 
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const handleSubmit = () => {
+        if (isSubmitting) return;
+
         if (!selectedMR) {
             showAlert("Please select an MR to close.");
             return;
         }
-        // Lot selection is optional now
-        // if (selectedLots.length === 0) {
-        //     showAlert("Please select at least one Lot produced against this MR.");
-        //     return;
-        // }
 
         const binsToConsume = Object.entries(consumptionData).filter(([_, qty]) => qty && parseFloat(qty) > 0);
 
@@ -59,6 +58,8 @@ const MRClosure = ({ showAlert }) => {
             showAlert("Please enter consumption quantity for at least one bin.");
             return;
         }
+
+        setIsSubmitting(true);
 
         // 1. Consume Bins (Reduce Stock)
         binsToConsume.forEach(([binId, qty]) => {
@@ -68,13 +69,14 @@ const MRClosure = ({ showAlert }) => {
         // 2. Close MR
         closeMR(selectedMR.id, { lots: selectedLots, consumed: binsToConsume });
 
-        // 3. Update Lots (Logically linked via MR)
+        // 3. Update Lots
         console.log(`Linked ${selectedLots.length} lots to MR ${selectedMR.id}`);
 
         showAlert(`MR ${selectedMR.id} Closed Successfully! Consumed materials & linked lots.`);
         setSelectedMR(null);
         setSelectedLots([]);
         setConsumptionData({});
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (
