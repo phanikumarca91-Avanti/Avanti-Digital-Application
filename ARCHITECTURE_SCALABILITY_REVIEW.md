@@ -79,12 +79,12 @@ Below is a detailed breakdown of your 12 complexities and our readiness:
 
 ---
 
-## Roadmap Recommendation
+## Roadmap Recommendation (Updated)
 
-1.  **Phase 1 (Current):** Stabilize Core Inward Flow (Security -> WB -> Warehouse).
-2.  **Phase 2:** Implement **Multi-Location RLS** (Critical for scaling beyond one plant).
-3.  **Phase 3:** Build the **Local Weighbridge Bridge** (Hardware Integration).
-4.  **Phase 4:** Develop **Offline Mode** (Hardest technical challenge).
-5.  **Phase 5:** CXO Dashboards & AI Experiments.
+1.  **Phase 1 (Current):** Stabilize Core Inward Flow (Security -> WB -> Warehouse) - **COMPLETE**
+2.  **Phase 2:** Implement **Multi-Location RLS** - **COMPLETE**
+3.  **Phase 3 (Next):** **Rice Lake API Integration** (Replace simulation with real API calls).
+4.  **Phase 4:** **Offline Mode Verification** (User reports working; extensive field testing recommended).
+5.  **Phase 5 (Future):** Advanced Reporting & Fleet Management (Low Priority).
 
-This architecture is **Scalable**, but points **#8 (Hardware Integration)** and **#10 (Offline Mode)** require dedicated engineering sprints.
+This architecture is **Scalable**. The immediate focus is replacing the "Simulated Weight" in `WeighbridgeModule` with the real Rice Lake API.

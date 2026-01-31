@@ -117,87 +117,106 @@ const Sidebar = ({ activeTab, setActiveTab, counts, onChangePassword }) => {
     });
 
     return (
-        <div className="w-64 bg-slate-900 text-white flex flex-col h-screen fixed left-0 top-0 shadow-xl z-50">
-            {/* Logo Area */}
-            <div className="p-6 border-b border-slate-800 flex items-center gap-3">
-                <div className="w-10 h-10 bg-brand-500 rounded-lg flex items-center justify-center font-bold text-xl shadow-lg shadow-brand-500/20">
-                    A
-                </div>
-                <div>
-                    <h1 className="font-bold text-lg tracking-tight">AVANTI Digitalisation</h1>
-                    <p className="text-xs text-slate-400 font-medium">application (ADA)</p>
-                </div>
-            </div>
+        <>
+            {/* Mobile Overlay */}
+            {isOpen && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-40 lg:hidden backdrop-blur-sm transition-opacity"
+                    onClick={toggleSidebar}
+                />
+            )}
 
-            {/* Navigation */}
-            <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-                <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4 px-2">
-                    Main Menu ({user?.role || 'User'})
-                </div>
-                {visibleMenuItems.map((item) => (
-                    <button
-                        key={item.id}
-                        onClick={() => setActiveTab(item.id)}
-                        className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl transition-all duration-200 group relative ${activeTab === item.id
-                            ? 'bg-brand-600 text-white shadow-lg shadow-brand-900/20'
-                            : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-                            }`}
-                    >
-                        <div className="flex items-center gap-3">
-                            <item.icon
-                                size={20}
-                                className={`transition-transform duration-200 ${activeTab === item.id ? 'scale-110' : 'group-hover:scale-110'
-                                    }`}
-                            />
-                            <span className="font-medium">{item.label}</span>
+            {/* Sidebar Container */}
+            <aside
+                className={`w-64 bg-slate-900 text-white flex flex-col h-screen fixed left-0 top-0 shadow-xl z-50 transition-transform duration-300 ease-in-out 
+                ${isOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
+            >
+                {/* Logo Area */}
+                <div className="p-6 border-b border-slate-800 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-brand-500 rounded-lg flex items-center justify-center font-bold text-xl shadow-lg shadow-brand-500/20">
+                            A
                         </div>
-
-                        {/* Badge */}
-                        {item.badge && (
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white shadow-sm">
-                                {item.badge > 9 ? '9+' : item.badge}
-                            </span>
-                        )}
-
-                        {activeTab === item.id && (
-                            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-white rounded-r-full" />
-                        )}
-                    </button>
-                ))}
-            </nav>
-
-            {/* User Profile */}
-            <div className="p-4 border-t border-slate-800 bg-slate-900/50">
-                <div className="flex items-center gap-3 px-2 mb-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-sm font-bold shadow-lg">
-                        {user?.fullName?.charAt(0) || user?.username?.charAt(0) || 'U'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                        <p className="text-sm font-bold truncate">{user?.fullName || user?.username || 'User'}</p>
-                        <p className="text-xs text-slate-400 truncate">{user?.role || 'Operator'}</p>
+                        <div>
+                            <h1 className="font-bold text-lg tracking-tight">AVANTI</h1>
+                            <p className="text-xs text-slate-400 font-medium">Digitalisation App</p>
+                        </div>
                     </div>
                 </div>
 
-                <div className="flex gap-2">
-                    <button
-                        onClick={onChangePassword}
-                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
-                        title="Change Password"
-                    >
-                        <Key size={14} /> Password
-                    </button>
-                    <button
-                        onClick={logout}
-                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-400 hover:text-white hover:bg-red-600/20 rounded-lg transition-colors border border-slate-700 hover:border-red-900/50"
-                        title="Sign Out"
-                    >
-                        Sign Out
-                    </button>
-                </div>
+                {/* Navigation */}
+                <nav className="flex-1 p-4 space-y-1 overflow-y-auto custom-scrollbar">
+                    <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4 px-2">
+                        Main Menu ({user?.role || 'User'})
+                    </div>
+                    {visibleMenuItems.map((item) => (
+                        <button
+                            key={item.id}
+                            onClick={() => {
+                                setActiveTab(item.id);
+                                if (window.innerWidth < 1024) toggleSidebar(); // Close on mobile click
+                            }}
+                            className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl transition-all duration-200 group relative ${activeTab === item.id
+                                ? 'bg-brand-600 text-white shadow-lg shadow-brand-900/20'
+                                : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                                }`}
+                        >
+                            <div className="flex items-center gap-3">
+                                <item.icon
+                                    size={20}
+                                    className={`transition-transform duration-200 ${activeTab === item.id ? 'scale-110' : 'group-hover:scale-110'
+                                        }`}
+                                />
+                                <span className="font-medium text-sm">{item.label}</span>
+                            </div>
 
-                {user?.role === 'ADMIN' && <ClearDataButton />}
-            </div>
-        </div>
+                            {/* Badge */}
+                            {item.badge && (
+                                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white shadow-sm">
+                                    {item.badge > 9 ? '9+' : item.badge}
+                                </span>
+                            )}
+
+                            {activeTab === item.id && (
+                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-white rounded-r-full" />
+                            )}
+                        </button>
+                    ))}
+                </nav>
+
+                {/* User Profile */}
+                <div className="p-4 border-t border-slate-800 bg-slate-900/50">
+                    <div className="flex items-center gap-3 px-2 mb-3">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-sm font-bold shadow-lg">
+                            {user?.fullName?.charAt(0) || user?.username?.charAt(0) || 'U'}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold truncate">{user?.fullName || user?.username || 'User'}</p>
+                            <p className="text-xs text-slate-400 truncate">{user?.role || 'Operator'}</p>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <button
+                            onClick={onChangePassword}
+                            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
+                            title="Change Password"
+                        >
+                            <Key size={14} /> Password
+                        </button>
+                        <button
+                            onClick={logout}
+                            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-400 hover:text-white hover:bg-red-600/20 rounded-lg transition-colors border border-slate-700 hover:border-red-900/50"
+                            title="Sign Out"
+                        >
+                            Sign Out
+                        </button>
+                    </div>
+
+                    {user?.role === 'ADMIN' && <ClearDataButton />}
+                </div>
+            </aside>
+        </>
     );
 };
 

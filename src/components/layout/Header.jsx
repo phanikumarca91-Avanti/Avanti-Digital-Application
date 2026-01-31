@@ -1,12 +1,12 @@
 import React from 'react';
-import { Bell, Search, Settings, MapPin, ChevronDown } from 'lucide-react';
+import { Bell, Search, Settings, MapPin, ChevronDown, Menu } from 'lucide-react';
 import { useOrganization } from '../../contexts/OrganizationContext';
 import BackupRestoreControl from '../shared/BackupRestoreControl';
 import DataMigration from '../admin/DataMigration';
 import { OfflineIndicator } from '../shared/OfflineIndicator';
 import { SyncStatusPanel } from '../shared/SyncStatusPanel';
 
-const Header = ({ activeTab }) => {
+const Header = ({ activeTab, toggleSidebar }) => {
     const [showSyncPanel, setShowSyncPanel] = React.useState(false);
     const { currentLocation, currentUnit, changeLocation, changeUnit, locations } = useOrganization();
 
@@ -26,9 +26,17 @@ const Header = ({ activeTab }) => {
 
     return (
         <header className="h-20 px-8 flex items-center justify-between bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-10 transition-all duration-300">
-            <div>
-                <h2 className="text-2xl font-bold text-slate-800 tracking-tight">{title}</h2>
-                <p className="text-sm text-slate-500 font-medium">{subtitle}</p>
+            <div className="flex items-center gap-4">
+                <button
+                    onClick={toggleSidebar}
+                    className="p-2 -ml-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg lg:hidden transition-colors"
+                >
+                    <Menu size={24} />
+                </button>
+                <div>
+                    <h2 className="text-2xl font-bold text-slate-800 tracking-tight">{title}</h2>
+                    <p className="text-sm text-slate-500 font-medium">{subtitle}</p>
+                </div>
             </div>
 
             <div className="flex items-center gap-6">

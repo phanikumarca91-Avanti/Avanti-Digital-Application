@@ -63,9 +63,9 @@ export default function App() {
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState('SECURITY');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile sidebar state
   const { vehicles, updateVehicle } = useVehicles();
   const { user, loading } = useAuth();
-
   const [showPwdUi, setShowPwdUi] = useState(false); // Valid state name
 
   const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', action: null });
@@ -155,11 +155,13 @@ function AppContent() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         counts={counts}
+        isOpen={isSidebarOpen}
+        toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
         onChangePassword={() => setShowPwdUi(true)}
       />
 
-      <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300">
-        <Header activeTab={activeTab} />
+      <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300 lg:ml-64">
+        <Header activeTab={activeTab} toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
 
         <main className="flex-1 overflow-auto p-6">
           <div className="max-w-7xl mx-auto space-y-6 animate-fade-in">
@@ -217,6 +219,6 @@ function AppContent() {
         onClose={() => setShowPwdUi(false)}
         showAlert={showAlert}
       />
-    </div>
+    </div >
   );
 }
