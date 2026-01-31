@@ -16,7 +16,7 @@ const ROLE_ACCESS = {
     ERP: ['ERP']
 };
 
-const Sidebar = ({ activeTab, setActiveTab, counts, onChangePassword }) => {
+const Sidebar = ({ activeTab, setActiveTab, counts, onChangePassword, isOpen, toggleSidebar }) => {
     const { user, logout } = useAuth();
     const { getOpenMRs, getPendingInwardVehicles } = useWarehouse();
     const { getLotsByStatus } = useProduction();
