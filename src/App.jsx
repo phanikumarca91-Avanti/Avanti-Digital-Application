@@ -22,6 +22,11 @@ import { OrganizationProvider } from './contexts/OrganizationContext';
 import { WarehouseProvider } from './contexts/WarehouseContext';
 import { ProductionProvider } from './contexts/ProductionContext';
 import { SalesProvider } from './contexts/SalesContext';
+import { VehicleProvider, useVehicles } from './contexts/VehicleContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import Login from './components/auth/Login';
+import UserManagementModule from './components/admin/UserManagementModule';
+import ChangePasswordDialog from './components/auth/ChangePasswordDialog';
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { hasError: false, error: null }; }
@@ -38,15 +43,19 @@ export default function App() {
   return (
     <ErrorBoundary>
       <OrganizationProvider>
-        <WarehouseProvider>
-          <MasterDataProvider>
-            <ProductionProvider>
-              <SalesProvider>
-                <AppContent />
-              </SalesProvider>
-            </ProductionProvider>
-          </MasterDataProvider>
-        </WarehouseProvider>
+        <AuthProvider>
+          <WarehouseProvider>
+            <MasterDataProvider>
+              <ProductionProvider>
+                <SalesProvider>
+                  <VehicleProvider>
+                    <AppContent />
+                  </VehicleProvider>
+                </SalesProvider>
+              </ProductionProvider>
+            </MasterDataProvider>
+          </WarehouseProvider>
+        </AuthProvider>
       </OrganizationProvider>
     </ErrorBoundary>
   );
@@ -54,25 +63,10 @@ export default function App() {
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState('SECURITY');
-  // Initialize from localStorage
-  const [vehicles, setVehicles] = useState(() => {
-    try {
-      const saved = localStorage.getItem('vehicles');
-      return saved ? JSON.parse(saved) : [];
-    } catch (e) {
-      console.error("Failed to load vehicles from localStorage", e);
-      return [];
-    }
-  });
+  const { vehicles, updateVehicle } = useVehicles();
+  const { user, loading } = useAuth();
 
-  // Persist to localStorage whenever vehicles change
-  React.useEffect(() => {
-    try {
-      localStorage.setItem('vehicles', JSON.stringify(vehicles));
-    } catch (e) {
-      console.error("Failed to save vehicles to localStorage", e);
-    }
-  }, [vehicles]);
+  const [showPwdUi, setShowPwdUi] = useState(false); // Valid state name
 
   const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', action: null });
   const [docViewer, setDocViewer] = useState({ isOpen: false, type: 'GRN', vehicle: null });
@@ -94,6 +88,7 @@ function AppContent() {
   }
 
   const counts = useMemo(() => {
+    if (!vehicles) return {};
     return {
       security: vehicles.filter(v =>
         v.status === 'AT_SECURITY_REJECT_IN' ||
@@ -115,72 +110,53 @@ function AppContent() {
     };
   }, [vehicles]);
 
-  const addLog = (vehicleId, action, stage) => {
-    setVehicles(prev => prev.map(v => {
-      if (v.id === vehicleId) {
-        return {
-          ...v,
-          logs: [...(v.logs || []), {
-            stage,
-            action,
-            timestamp: new Date().toISOString(),
-            user: 'CurrentUser' // Replace with actual user
-          }]
-        };
-      }
-      return v;
-    }));
-  };
+  // DocumentViewer onAuthorize handler refactored below in the return statement
 
-  const updateVehicleStatus = (vehicleId, newStatus, data = {}, action = '') => {
-    setVehicles(prev => prev.map(v => {
-      if (v.id === vehicleId) {
-        return { ...v, status: newStatus, ...data };
-      }
-      return v;
-    }));
-    // If action is not provided, try to infer or just log status change
-    const logAction = action || `Status updated to ${newStatus}`;
-    addLog(vehicleId, logAction, activeTab);
-  };
-
-  // Alias for compatibility if needed, or just use updateVehicleStatus directly
-  const updateStatus = updateVehicleStatus;
+  // --- EARLY RETURNS FOR AUTH MUST BE AFTER HOOKS ---
+  if (loading) return <div className="h-screen flex items-center justify-center bg-slate-900 text-white">Loading Security System...</div>;
+  if (!user) return <Login />;
 
   const renderContent = () => {
     switch (activeTab) {
       case 'SECURITY':
-        return <SecurityModule vehicles={vehicles} setVehicles={setVehicles} addLog={addLog} showAlert={showAlert} showConfirm={showConfirm} updateStatus={updateStatus} />;
+        return <SecurityModule showAlert={showAlert} showConfirm={showConfirm} />;
       case 'QC':
-        return <QCModule vehicles={vehicles} updateStatus={updateStatus} showAlert={showAlert} />;
+        return <QCModule showAlert={showAlert} />;
       case 'WEIGHBRIDGE':
-        return <WeighbridgeModule vehicles={vehicles} updateStatus={updateStatus} showAlert={showAlert} />;
+        return <WeighbridgeModule showAlert={showAlert} />;
       case 'WAREHOUSE':
-        return <WarehouseModule vehicles={vehicles} updateStatus={updateStatus} showAlert={showAlert} />;
+        return <WarehouseModule showAlert={showAlert} />;
       case 'PRODUCTION':
-        return <ProductionModule addLog={addLog} showAlert={showAlert} showConfirm={showConfirm} />;
+        return <ProductionModule showAlert={showAlert} />;
       case 'ERP':
-        return <ERPModule vehicles={vehicles} updateStatus={updateStatus} showAlert={showAlert} setDocViewer={setDocViewer} setVehicles={setVehicles} />;
+        return <ERPModule showAlert={showAlert} setDocViewer={setDocViewer} />;
       case 'REPORTS':
-        return <ReportsModule vehicles={vehicles} />;
+        return <ReportsModule />;
       case 'CUSTOMERS':
         return <CustomerModule showAlert={showAlert} />;
       case 'SALES':
-        return <SalesModule showAlert={showAlert} vehicles={vehicles} setVehicles={setVehicles} />;
+        return <SalesModule showAlert={showAlert} />;
       case 'MATERIALS':
         return <MaterialModule showAlert={showAlert} showConfirm={showConfirm} />;
       case 'SUPPLIERS':
         return <SupplierModule showAlert={showAlert} showConfirm={showConfirm} />;
       case 'MATERIAL_HOD':
-        return <MaterialHodModule vehicles={vehicles} updateStatus={updateStatus} showAlert={showAlert} showConfirm={showConfirm} />;
+        return <MaterialHodModule showAlert={showAlert} showConfirm={showConfirm} />;
+      case 'USERS':
+        return <UserManagementModule showAlert={showAlert} />;
       default:
-        return <SecurityModule vehicles={vehicles} setVehicles={setVehicles} addLog={addLog} showAlert={showAlert} showConfirm={showConfirm} updateStatus={updateStatus} />;
+        return <SecurityModule showAlert={showAlert} showConfirm={showConfirm} />;
     }
   };
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-900">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} counts={counts} />
+      <Sidebar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        counts={counts}
+        onChangePassword={() => setShowPwdUi(true)}
+      />
 
       <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300">
         <Header activeTab={activeTab} />
@@ -224,10 +200,22 @@ function AppContent() {
             generatedMsg += `Goods Receipt Note (${v.documents.grn})`;
           }
 
-          updateStatus(v.id, 'AT_SECURITY_OUT', 'ERP', 'Authorized & Documents Generated');
+          updateVehicle(v.id, { status: 'AT_SECURITY_OUT' }, {
+            stage: 'SECURITY',
+            action: 'Authorized & Documents Generated',
+            timestamp: new Date().toISOString(),
+            user: 'SecurityGuard'
+          });
           showAlert(generatedMsg);
           handleDocViewerClose();
         }}
+      // Add cancel/close handling if needed or relying on prop defaults
+      />
+
+      <ChangePasswordDialog
+        isOpen={showPwdUi}
+        onClose={() => setShowPwdUi(false)}
+        showAlert={showAlert}
       />
     </div>
   );

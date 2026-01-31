@@ -142,6 +142,14 @@ export const FG_MATERIAL_MASTER = {
         bagWeight: 1,
         category: "SHRIMP FEED",
         uom: "MT"
+    },
+    "HIGH BOOST-3 - 1KG": {
+        productName: "HIGH BOOST-3",
+        brand: "HIGH BOOST",
+        grade: "HIGH BOOST-3 - 1KG",
+        bagWeight: 1,
+        category: "SHRIMP FEED",
+        uom: "MT"
     }
 };
 

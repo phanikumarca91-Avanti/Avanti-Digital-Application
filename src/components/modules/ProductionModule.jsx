@@ -134,7 +134,7 @@ const ProductionModule = ({ showAlert }) => {
                                             <tr key={mr.id} className="hover:bg-slate-50">
                                                 <td className="px-6 py-4 text-slate-500">{new Date(mr.closedAt).toLocaleDateString()}</td>
                                                 <td className="px-6 py-4 font-medium text-slate-900">{mr.id}</td>
-                                                <td className="px-6 py-4 text-slate-500">{mr.material}</td>
+                                                <td className="px-6 py-4 text-slate-500">{mr.material || mr.materialName || (mr.items && mr.items[0]?.materialName) || '-'}</td>
                                                 <td className="px-6 py-4 font-mono text-slate-600">{mr.qty} {mr.uom}</td>
                                                 <td className="px-6 py-4">
                                                     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">

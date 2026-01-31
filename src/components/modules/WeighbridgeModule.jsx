@@ -1,16 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { Scale, Truck, ArrowRight, AlertTriangle, Camera, Download, XCircle, History } from 'lucide-react';
+import { useVehicles } from '../../contexts/VehicleContext';
+import { useWarehouse } from '../../contexts/WarehouseContext';
 import Input from '../shared/Input';
 import CameraCapture from '../shared/CameraCapture';
 import PhotoGalleryModal from '../shared/PhotoGalleryModal';
 import VehicleEditModal from '../shared/VehicleEditModal';
 import LogViewerModal from '../shared/LogViewerModal';
 
-const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
+const WeighbridgeModule = ({ showAlert }) => {
+    const { vehicles, updateVehicle } = useVehicles();
+    const { updateBinStock } = useWarehouse();
+    const safeVehicles = vehicles || [];
     const [weight, setWeight] = useState(0);
     const [isStable, setIsStable] = useState(false);
     const [isManual, setIsManual] = useState(false);
     const [activeTab, setActiveTab] = useState('PENDING');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // Helper to match legacy prop signature
+    const updateStatus = (id, status, data, logAction) => {
+        updateVehicle(id, { status, ...data }, logAction ? {
+            stage: 'WEIGHBRIDGE',
+            action: logAction,
+            timestamp: new Date().toISOString(),
+            user: 'WEIGH_OFFICER'
+        } : null);
+    };
 
     // Camera State
     const [showCamera, setShowCamera] = useState(false);
@@ -40,16 +56,19 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
         return () => clearInterval(interval);
     }, [isManual]);
 
-    const pendingWeigh1 = vehicles.filter(v => v.status === 'AT_WEIGHBRIDGE_1' || v.status === 'RETURN_AT_WEIGHBRIDGE_1' || v.status === 'SALES_AT_SECURITY' || v.status === 'SALES_AT_WEIGHBRIDGE_1');
-    const pendingWeigh2 = vehicles.filter(v => v.status === 'AT_WEIGHBRIDGE_2' || v.status === 'RETURN_AT_WEIGHBRIDGE_2' || v.status === 'SALES_AT_LOADING');
-    const completedWeighments = vehicles.filter(v => v.weigh2 && v.netWeight).sort((a, b) => b.id - a.id);
+    const pendingWeigh1 = safeVehicles.filter(v => v.status === 'AT_WEIGHBRIDGE_1' || v.status === 'RETURN_AT_WEIGHBRIDGE_1' || v.status === 'SALES_AT_SECURITY' || v.status === 'SALES_AT_WEIGHBRIDGE_1');
+    const pendingWeigh2 = safeVehicles.filter(v => v.status === 'AT_WEIGHBRIDGE_2' || v.status === 'RETURN_AT_WEIGHBRIDGE_2' || v.status === 'SALES_AT_WEIGHBRIDGE_2');
+    const completedWeighments = safeVehicles.filter(v => v.weigh2 && v.netWeight).sort((a, b) => b.id - a.id);
 
     const handleCaptureWeight = (id, type) => {
+        if (isSubmitting) return;
+
         if (!isStable && !isManual) {
             showAlert("Scale is unstable. Please wait.");
             return;
         }
 
+        setIsSubmitting(true);
         const vehicle = vehicles.find(v => v.id === id);
 
         if (type === 'GROSS') {
@@ -73,13 +92,13 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
                 showAlert(`Gross Weight captured: ${weight} kg. Vehicle moved to Warehouse for Bay Assignment.`);
             }
         } else if (type === 'TARE') {
-            if (vehicle.status === 'RETURN_AT_WEIGHBRIDGE_2' || vehicle.status === 'SALES_AT_LOADING') {
+            if (vehicle.status === 'RETURN_AT_WEIGHBRIDGE_2' || vehicle.status === 'SALES_AT_WEIGHBRIDGE_2') {
                 // Return & Sales Flow: 2nd Weight is GROSS (Full)
                 // Net = Full (Weight) - Empty (Weigh1)
                 const emptyWeight = vehicle.weigh1 || 0;
                 const net = Math.abs(weight - emptyWeight);
 
-                if (vehicle.status === 'SALES_AT_LOADING') {
+                if (vehicle.status === 'SALES_AT_WEIGHBRIDGE_2') {
                     // Sales Verification
                     const planned = vehicle.plannedWeight || 0;
                     const diff = net - planned;
@@ -118,9 +137,16 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
                     netWeight: net,
                     totalValue: totalValue
                 });
+
+                // Update Warehouse Stock
+                if (vehicle.assignedBay) {
+                    updateBinStock(vehicle.assignedBay, net, vehicle.materialName || 'Unknown Material', 'ADD');
+                }
+
                 showAlert(`Tare Weight captured: ${weight} kg. Net Weight: ${net} kg. Value: ₹${totalValue}. Vehicle moved to ERP for GRN.`);
             }
         }
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     const handleCameraTrigger = (id) => {
@@ -295,7 +321,7 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
                                                     </button>
                                                     <button
                                                         onClick={() => handleCaptureWeight(v.id, 'GROSS')}
-                                                        disabled={!isStable}
+                                                        disabled={!isStable || isSubmitting}
                                                         className="px-6 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-slate-400 text-white rounded-lg font-bold shadow-lg shadow-brand-500/20 transition-all active:scale-95 flex items-center gap-2"
                                                     >
                                                         <Scale size={18} /> {v.status.includes('RETURN') ? 'Capture Empty' : 'Capture Gross'}
@@ -350,7 +376,7 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
                                                     )}
                                                     <button
                                                         onClick={() => handleCaptureWeight(v.id, 'TARE')}
-                                                        disabled={!isStable}
+                                                        disabled={!isStable || isSubmitting}
                                                         className="px-6 py-2 bg-accent-600 hover:bg-accent-700 disabled:bg-slate-400 text-white rounded-lg font-bold shadow-lg shadow-accent-500/20 transition-all active:scale-95 flex items-center justify-center gap-2"
                                                     >
                                                         <Scale size={18} /> {v.status.includes('RETURN') ? 'Capture Gross' : 'Capture Tare'}
@@ -434,8 +460,11 @@ const WeighbridgeModule = ({ vehicles, updateStatus, showAlert }) => {
                     vehicle={editingVehicle}
                     title="Correct Vehicle Data (Weighbridge)"
                     onSave={(id, updatedData, reason) => {
+                        if (isSubmitting) return;
+                        setIsSubmitting(true);
                         updateStatus(id, editingVehicle.status, updatedData, `Data Correction (Weighbridge): ${reason}`);
                         showAlert("Vehicle data corrected and logged successfully.");
+                        setTimeout(() => setIsSubmitting(false), 1000);
                     }}
                 />
             )}

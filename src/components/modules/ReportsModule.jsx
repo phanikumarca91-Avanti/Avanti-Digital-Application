@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FileText, Download, Filter, Search, ClipboardList, Package, Truck, ChevronDown, ChevronRight, Edit2, AlertCircle } from 'lucide-react';
 import { useWarehouse } from '../../contexts/WarehouseContext';
 import { useProduction } from '../../contexts/ProductionContext';
+import { useVehicles } from '../../contexts/VehicleContext';
 import TraceabilityReport from '../reports/TraceabilityReport';
 import { calculateBags } from '../../utils/bagCalculator';
 
@@ -86,11 +87,12 @@ const StockAdjustmentModal = ({ isOpen, onClose, bay, onConfirm }) => {
     );
 };
 
-const ReportsModule = ({ vehicles = [] }) => {
+const ReportsModule = () => {
     const [activeTab, setActiveTab] = useState('MR_LOGS');
     const [expandedRow, setExpandedRow] = useState(null);
     const { getAllMRs, bays, updateBinStock } = useWarehouse();
     const { lots } = useProduction();
+    const { vehicles } = useVehicles();
     const [searchTerm, setSearchTerm] = useState('');
     const [stockFilterType, setStockFilterType] = useState('ALL'); // ALL, RM, FG
     const [stockFilterStatus, setStockFilterStatus] = useState('ALL'); // ALL, OCCUPIED, EMPTY

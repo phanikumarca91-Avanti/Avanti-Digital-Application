@@ -6,6 +6,7 @@ import Input from '../shared/Input';
 import { SECURITY_REGISTERS } from '../../config/securityRegisters';
 import { useMasterData } from '../../contexts/MasterDataContext';
 import { useSales } from '../../contexts/SalesContext';
+import { useVehicles } from '../../contexts/VehicleContext';
 
 import CameraCapture from '../shared/CameraCapture';
 import PhotoGalleryModal from '../shared/PhotoGalleryModal';
@@ -13,9 +14,13 @@ import LogViewerModal from '../shared/LogViewerModal';
 import UserManualModal from '../shared/UserManualModal';
 
 
-const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showConfirm }) => {
+const SecurityModule = ({ showAlert, showConfirm }) => {
+    // Consume Contexts
+    const { vehicles, addVehicle, updateVehicle, deleteVehicle, refreshVehicles } = useVehicles();
     const { masterData } = useMasterData();
     const { plannedVehicles } = useSales();
+
+    // Refs
     const scrollContainerRef = useRef(null);
     const fileInputRef = useRef(null);
 
@@ -35,6 +40,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
     const [showReturnModal, setShowReturnModal] = useState(false);
     const [returnVehicleId, setReturnVehicleId] = useState(null);
     const [newReturnVehicleNo, setNewReturnVehicleNo] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Search & Filter
     const [searchTerm, setSearchTerm] = useState('');
@@ -43,6 +49,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
     const [selectedIds, setSelectedIds] = useState([]);
 
     // Filter Expected Vehicles for Sales Dispatch
+    // Note: vehicles is now coming from Context (Supabase)
     const expectedSalesVehicles = vehicles.filter(v => v.status === 'SALES_EXPECTED_AT_SECURITY');
 
     // Initialize defaults on mount
@@ -50,11 +57,12 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
         if (Object.keys(formData).length === 0) {
             setFormData(getInitialFormData(activeTab));
         }
-    }, []); // Run once on mount
+    }, [activeTab]);
 
     // Helper to get active register config
     const activeRegister = Object.values(SECURITY_REGISTERS).find(reg => reg.id === activeTab);
 
+    // Derived Lists
     const historySecurity = useMemo(() =>
         vehicles.filter(v => v.status === 'COMPLETED' || v.status === 'RETURN_COMPLETED').sort((a, b) => b.id - a.id),
         [vehicles]);
@@ -69,33 +77,16 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
         let entries = vehicles.filter(v => v.registerId === activeRegister.id);
 
         if (activeTab === 'lorry_yard') {
-            // Lorry Yard: Show active only, or history (which includes moved entries)
             if (viewHistory) {
-                // History for Lorry Yard: entries that originated there but moved on? 
-                // Or just COMPLETED ones?
-                // The original logic was: v.origin === 'lorry_yard' && v.registerId !== 'lorry_yard'
-                // This seems specific to tracking where they went. 
-                // Let's keep the user's probable intent: History = Filter completed/archived.
-
-                // Merging logic: 
-                // If viewHistory is TRUE, showing ALL entries (including completed/moved).
-                // But specifically for Lorry Yard, the previous logic showed *vehicles that moved away*.
-                // Let's preserve that special behavior if needed, or simplfy.
-
-                // Simplified Logic for ALL tabs:
-                // Active View: Status != COMPLETED and != RETURN_COMPLETED.
-                // History View: Show ALL (or just completed? "View History" usually implies seeing past data).
-                // Let's show ALL when History is ON, and Filtered when OFF.
+                // Showing history?
             } else {
                 entries = entries.filter(v => v.status !== 'COMPLETED' && v.status !== 'RETURN_COMPLETED');
             }
         } else {
-            // Other Tabs
             if (!viewHistory) {
                 entries = entries.filter(v => v.status !== 'COMPLETED' && v.status !== 'RETURN_COMPLETED');
             }
         }
-
         return entries.sort((a, b) => b.id - a.id);
     }, [vehicles, activeRegister, activeTab, viewHistory]);
 
@@ -137,13 +128,14 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
             const text = event.target.result;
             const lines = text.split('\n');
             if (lines.length < 2) return; // Header + 1 row minimum
 
             const headers = lines[0].split(',').map(h => h.trim());
-            const newEntries = [];
+
+            let uploadCount = 0;
 
             for (let i = 1; i < lines.length; i++) {
                 if (!lines[i].trim()) continue;
@@ -171,19 +163,21 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
 
                 const finalID = `${dd}${mm}${yyyy}${supplierPart}${vehiclePart}`;
 
-                newEntries.push({
+                const newVehicle = {
                     id: Date.now() + i,
                     ...entry,
-                    status: 'AT_QC_1',
+                    status: 'AT_QC_1', // Default bulk status
                     entryTime: new Date().toISOString(),
                     registerId: activeTab,
                     uniqueID: finalID,
                     origin: activeTab // Track origin
-                });
+                };
+
+                await addVehicle(newVehicle);
+                uploadCount++;
             }
 
-            setVehicles(prev => [...newEntries, ...prev]);
-            showAlert(`Successfully uploaded ${newEntries.length} entries.`);
+            showAlert(`Successfully uploaded ${uploadCount} entries.`);
             if (fileInputRef.current) fileInputRef.current.value = '';
         };
         reader.readAsText(file);
@@ -208,7 +202,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
 
     const handleTabChange = (tabId) => {
         setActiveTab(tabId);
-        setFormData(getInitialFormData(tabId)); // Auto-populate defaults
+        // setFormData(getInitialFormData(tabId)); // useEffect handles this now on activeTab change
         setIsEditing(false);
         setEditId(null);
         setSelectedIds([]);
@@ -229,108 +223,135 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
         return `${dd}${mm}${yyyy}${supplierPart}${vehiclePart}`;
     };
 
-    const handleSave = (shouldSubmit = false) => {
+    const handleSave = async (shouldSubmit = false) => {
         if (!activeRegister) return;
+        if (isSubmitting) return;
 
-        // Validation
-        // Assuming missingFields is defined elsewhere or will be added.
-        // For now, commenting out to avoid error if not defined.
-        // if (missingFields.length > 0) {
-        //     showAlert(`Please fill in required fields: ${missingFields.map(f => f.label).join(', ')}`);
-        //     return;
-        // }
-
-        // Sales Dispatch Validation & Data Copy
-        let salesData = {};
-        if (activeTab === 'feed_dispatch') {
-            const plannedVehicle = plannedVehicles.find(pv => pv.vehicleNo === formData.vehicleNo && pv.stage === 'PLANNED');
-            if (!plannedVehicle) {
-                showAlert("Vehicle not found in Dispatch Plan. Please verify with Sales.");
-                return;
+        setIsSubmitting(true);
+        try {
+            // ... (keep validation and logic same)
+            // Sales Dispatch Validation & Data Copy
+            let salesData = {};
+            if (activeTab === 'feed_dispatch') {
+                const plannedVehicle = plannedVehicles.find(pv => pv.vehicleNo === formData.vehicleNo);
+                if (!plannedVehicle) {
+                    showAlert("Vehicle not found in Dispatch Plan. Please verify with Sales.");
+                    setIsSubmitting(false);
+                    return;
+                }
+                salesData = {
+                    assignedOrders: plannedVehicle.assignedOrders,
+                    plannedWeight: plannedVehicle.orders?.reduce((sum, o) => sum + o.qty, 0) || 0
+                };
             }
-            salesData = {
-                assignedOrders: plannedVehicle.assignedOrders,
-                plannedWeight: plannedVehicle.orders?.reduce((sum, o) => sum + o.qty, 0) || 0 // Assuming simple sum
-            };
-        }
 
-        // Logic to update EXISTING expected vehicle instead of creating new if it exists
-        const expectedVehicle = activeTab === 'feed_dispatch' ? vehicles.find(v => v.vehicleNo === formData.vehicleNo && v.status === 'SALES_EXPECTED_AT_SECURITY') : null;
+            // Logic to update EXISTING expected vehicle instead of creating new if it exists
+            const expectedVehicle = activeTab === 'feed_dispatch' ? vehicles.find(v => v.vehicleNo === formData.vehicleNo && v.status === 'SALES_EXPECTED_AT_SECURITY') : null;
 
-        if (isEditing) {
-            setVehicles(prev => prev.map(v => {
-                if (v.id === editId) {
-                    // Update: Logic for routing based on prior QC status
-                    // If QC1 is already ACCEPTED (Flow: Lorry Yard -> QC -> Security), move to Weighbridge 1
-                    // Else (Standard Flow: Security -> QC), move to QC 1
-                    let newStatus = v.status;
-                    if (shouldSubmit) {
-                        // Only advance status if at entry stage
-                        if (v.status === 'AT_SECURITY_GATE_ENTRY' || v.status === 'AT_SECURITY_GATE') {
-                            newStatus = (v.qc1Status === 'ACCEPTED') ? 'AT_WEIGHBRIDGE_1' : 'AT_QC_1';
-                        }
-                        // Else keep current status (e.g., AT_SECURITY_OUT)
-                    } else {
-                        // Draft save, keep current status
-                        newStatus = v.status;
+            if (isEditing) {
+                // Update Existing
+                const v = vehicles.find(v => v.id === editId);
+                if (!v) {
+                    setIsSubmitting(false);
+                    return;
+                }
+
+                let newStatus = v.status;
+                if (shouldSubmit) {
+                    if (v.status === 'AT_SECURITY_GATE_ENTRY' || v.status === 'AT_SECURITY_GATE') {
+                        newStatus = (v.qc1Status === 'ACCEPTED') ? 'AT_WEIGHBRIDGE_1' : 'AT_QC_1';
                     }
-
-                    return { ...v, ...formData, status: newStatus };
                 }
-                return v;
-            }));
 
-            if (shouldSubmit) {
-                showAlert("Entry submitted successfully.");
-            } else {
-                showAlert("Entry updated successfully.");
-            }
+                await updateVehicle(editId, { ...formData, status: newStatus }, {
+                    stage: 'SECURITY',
+                    action: shouldSubmit ? `Updated & Submitted (Status: ${newStatus})` : 'Updated Entry',
+                    timestamp: new Date().toISOString(),
+                    user: 'SecurityGuard'
+                });
 
-            setIsEditing(false);
-            setEditId(null);
-        } else if (expectedVehicle) {
-            // UPDATE Existing Expected Vehicle instead of creating duplicate
-            setVehicles(prev => prev.map(v => {
-                if (v.id === expectedVehicle.id) {
-                    return {
-                        ...v,
-                        ...formData,
-                        ...salesData,
-                        status: shouldSubmit ? 'SALES_AT_WEIGHBRIDGE_1' : 'SALES_AT_SECURITY', // Sales Flow: Direct to WB1 (Empty)
-                        entryTime: new Date().toISOString(),
-                        registerId: activeTab,
-                        uniqueID: generateUniqueID(), // Generate ID now
-                        origin: activeTab
-                    };
+                if (shouldSubmit) {
+                    showAlert("Entry submitted successfully.");
+                } else {
+                    showAlert("Entry updated successfully.");
                 }
-                return v;
-            }));
-            if (shouldSubmit) {
-                showAlert("Vehicle Allowed! Moved directly to Weighbridge for Empty Weight.");
-            } else {
-                showAlert("Entry saved as Draft.");
-            }
-        } else {
-            const uniqueID = generateUniqueID();
-            const newVehicle = {
-                id: Date.now(),
-                ...formData,
-                ...salesData, // Include Sales Data
-                status: shouldSubmit ? (activeTab === 'feed_dispatch' ? 'SALES_AT_WEIGHBRIDGE_1' : 'AT_QC_1') : 'AT_SECURITY_GATE',
-                entryTime: new Date().toISOString(),
-                registerId: activeTab,
-                uniqueID: uniqueID,
-                origin: activeTab // Track origin for Lorry Yard History
-            };
-            setVehicles(prev => [newVehicle, ...prev]);
 
-            if (shouldSubmit) {
-                showAlert(`Entry submitted successfully. ID: ${uniqueID}`);
+                setIsEditing(false);
+                setEditId(null);
+
+            } else if (expectedVehicle) {
+                // UPDATE Existing Expected Vehicle
+                await updateVehicle(expectedVehicle.id, {
+                    ...formData,
+                    ...salesData,
+                    status: shouldSubmit ? 'SALES_AT_WEIGHBRIDGE_1' : 'SALES_AT_SECURITY',
+                    entryTime: new Date().toISOString(),
+                    registerId: activeTab,
+                    uniqueID: generateUniqueID(),
+                    origin: activeTab
+                }, {
+                    stage: 'SECURITY',
+                    action: `Sales Vehicle Admitted: ${formData.vehicleNo}`,
+                    timestamp: new Date().toISOString(),
+                    user: 'SecurityGuard'
+                });
+
+                if (shouldSubmit) {
+                    showAlert("Vehicle Allowed! Moved directly to Weighbridge for Empty Weight.");
+                } else {
+                    showAlert("Entry saved as Draft.");
+                }
             } else {
-                showAlert(`Entry saved as draft. ID: ${uniqueID}`);
+                // Create New
+                const uniqueID = generateUniqueID();
+
+                // DOUBLE CHECK: Prevent duplicate active entries (Idempotency & Business Rule)
+                const normalize = (val) => String(val || '').trim().toLowerCase();
+
+                const existingActive = vehicles.find(v =>
+                    (normalize(v.vehicleNo) === normalize(formData.vehicleNo) || normalize(v.vehicleNumber) === normalize(formData.vehicleNo)) &&
+                    !['COMPLETED', 'RETURN_COMPLETED', 'PROVISIONAL_PENDING_HOD'].includes(v.status) &&
+                    v.id !== editId // Ignore self if editing
+                );
+
+                if (existingActive) {
+                    showAlert(`Vehicle ${formData.vehicleNo} is already inside or active (Status: ${existingActive.status}). Cannot create duplicate entry.`);
+                    setIsSubmitting(false);
+                    return;
+                }
+
+                const newVehicle = {
+                    id: Date.now(),
+                    ...formData,
+                    ...salesData,
+                    status: shouldSubmit ? (activeTab === 'feed_dispatch' ? 'SALES_AT_WEIGHBRIDGE_1' : 'AT_QC_1') : 'AT_SECURITY_GATE',
+                    entryTime: new Date().toISOString(),
+                    registerId: activeTab,
+                    uniqueID: uniqueID,
+                    origin: activeTab,
+                    logs: [{
+                        stage: 'SECURITY',
+                        action: `Vehicle Entered: ${formData.vehicleNo}`,
+                        timestamp: new Date().toISOString(),
+                        user: 'SecurityGuard'
+                    }]
+                };
+
+                await addVehicle(newVehicle);
+
+                if (shouldSubmit) {
+                    showAlert(`Entry submitted successfully. ID: ${uniqueID}`);
+                } else {
+                    showAlert(`Entry saved as draft. ID: ${uniqueID}`);
+                }
             }
+            setFormData(getInitialFormData(activeTab));
+        } catch (error) {
+            console.error("Save Error:", error);
+            showAlert("Error saving entry");
+        } finally {
+            setIsSubmitting(false);
         }
-        setFormData(getInitialFormData(activeTab)); // Reset with defaults
     };
 
     const handleEdit = (vehicle) => {
@@ -351,8 +372,8 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
     };
 
     const handleDelete = (id) => {
-        showConfirm("Are you sure you want to delete this entry?", () => {
-            setVehicles(prev => prev.filter(v => v.id !== id));
+        showConfirm("Are you sure you want to delete this entry?", async () => {
+            await deleteVehicle(id);
             showAlert("Entry deleted successfully.");
             if (editId === id) {
                 setIsEditing(false);
@@ -364,8 +385,10 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
 
     const handleBulkDelete = () => {
         if (selectedIds.length === 0) return;
-        showConfirm(`Are you sure you want to delete ${selectedIds.length} entries?`, () => {
-            setVehicles(prev => prev.filter(v => !selectedIds.includes(v.id)));
+        showConfirm(`Are you sure you want to delete ${selectedIds.length} entries?`, async () => {
+            for (const id of selectedIds) {
+                await deleteVehicle(id);
+            }
             showAlert(`${selectedIds.length} entries deleted successfully.`);
             setSelectedIds([]);
         });
@@ -387,19 +410,29 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
 
 
 
-    const handleExit = (vehicleId) => {
+    const handleExit = async (vehicleId) => {
         const vehicle = vehicles.find(v => v.id === vehicleId);
+        if (!vehicle) return;
+
+        let newStatus = 'COMPLETED';
+        let msg = 'Vehicle Exit Approved. Transaction Completed.';
 
         if (vehicle.status === 'RETURN_VEHICLE_INSIDE') {
-            updateStatus(vehicleId, 'RETURN_COMPLETED', {}, 'Return Material Exit Completed');
-            showAlert("Return Material Vehicle Exited. Transaction Closed.");
+            newStatus = 'RETURN_COMPLETED';
+            msg = "Return Material Vehicle Exited. Transaction Closed.";
         } else if (vehicle.isProvisional) {
-            updateStatus(vehicleId, 'PROVISIONAL_PENDING_HOD', {}, 'Exited with Provisional GRN');
-            showAlert("Vehicle Exited (Provisional). Pending HOD Approval.");
-        } else {
-            updateStatus(vehicleId, 'COMPLETED');
-            showAlert(`Vehicle Exit Approved. Transaction Completed.`);
+            newStatus = 'PROVISIONAL_PENDING_HOD';
+            msg = "Vehicle Exited (Provisional). Pending HOD Approval.";
         }
+
+        await updateVehicle(vehicleId, { status: newStatus }, {
+            stage: 'SECURITY',
+            action: 'Gate Out',
+            timestamp: new Date().toISOString(),
+            user: 'SecurityGuard'
+        });
+
+        showAlert(msg);
     };
 
     const handleReturnEntryClick = (vehicleId) => {
@@ -415,11 +448,16 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
             return;
         }
 
-        updateStatus(returnVehicleId, 'RETURN_AT_WEIGHBRIDGE_1', {
+        updateVehicle(returnVehicleId, {
+            status: 'RETURN_AT_WEIGHBRIDGE_1',
             returnEntryTime: new Date().toISOString(),
             returnVehicleNo: newReturnVehicleNo.toUpperCase(),
-            // We keep the original ID but track the new vehicle number for the return leg
-        }, `Return Vehicle Entered: ${newReturnVehicleNo.toUpperCase()}`);
+        }, {
+            stage: 'SECURITY',
+            action: `Return Vehicle Entered: ${newReturnVehicleNo.toUpperCase()}`,
+            timestamp: new Date().toISOString(),
+            user: 'SecurityGuard'
+        });
 
         showAlert("Return Vehicle Entered. Proceed to Weighbridge for Empty Weight.");
         setShowReturnModal(false);
@@ -427,8 +465,6 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
     };
 
     const [showManual, setShowManual] = useState(false);
-
-    // ... existing interactions ...
 
     return (
         <div className="space-y-6">
@@ -600,7 +636,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                             <button
                                 onClick={() => setFormData(getInitialFormData(activeTab))} // Reset to defaults
                                 className="px-6 py-2 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors"
-                                disabled={['COMPLETED', 'RETURN_COMPLETED', 'PROVISIONAL_PENDING_HOD'].includes(formData.status)}
+                                disabled={isSubmitting || ['COMPLETED', 'RETURN_COMPLETED', 'PROVISIONAL_PENDING_HOD'].includes(formData.status)}
                             >
                                 Clear
                             </button>
@@ -608,7 +644,8 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                             {!['COMPLETED', 'RETURN_COMPLETED', 'PROVISIONAL_PENDING_HOD'].includes(formData.status) && (
                                 <button
                                     onClick={() => handleSave(false)}
-                                    className="px-6 py-2 border border-brand-600 text-brand-600 hover:bg-brand-50 rounded-lg font-bold transition-all active:scale-95 flex items-center gap-2"
+                                    disabled={isSubmitting}
+                                    className={`px-6 py-2 border border-brand-600 text-brand-600 hover:bg-brand-50 rounded-lg font-bold transition-all active:scale-95 flex items-center gap-2 ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
                                 >
                                     <Save size={18} />
                                     {isEditing ? 'Update' : 'Save Draft'}
@@ -617,12 +654,16 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                             {!['COMPLETED', 'RETURN_COMPLETED', 'PROVISIONAL_PENDING_HOD'].includes(formData.status) && (
                                 <button
                                     onClick={() => handleSave(true)}
-                                    className="px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold shadow-lg shadow-brand-500/20 transition-all active:scale-95 flex items-center gap-2"
+                                    disabled={isSubmitting}
+                                    className={`px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold shadow-lg shadow-brand-500/20 transition-all active:scale-95 flex items-center gap-2 ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
                                 >
                                     {isEditing ? <CheckCircle size={18} /> : <LogIn size={18} />}
-                                    {isEditing
-                                        ? (activeTab === 'feed_dispatch' ? 'Update & Send to WB' : 'Update & Send to QC')
-                                        : (activeTab === 'rm_inward' ? 'Gate In (Send to QC)' : 'Gate In')
+                                    {isSubmitting
+                                        ? 'Procesing...'
+                                        : (isEditing
+                                            ? (activeTab === 'feed_dispatch' ? 'Update & Send to WB' : 'Update & Send to QC')
+                                            : (activeTab === 'rm_inward' ? 'Gate In (Send to QC)' : 'Gate In')
+                                        )
                                     }
                                 </button>
                             )}
@@ -657,7 +698,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                     </div>
 
                     {/* Recent Entries List */}
-                    <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden animate-fade-in">
+                    < div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden animate-fade-in" >
                         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                             <div className="flex items-center gap-3">
                                 <h3 className="font-bold text-slate-800">Recent Entries ({registerEntries.length})</h3>
@@ -726,7 +767,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                                                         >
                                                             <History size={16} />
                                                         </button>
-                                                        {v.status === 'AT_SECURITY_OUT' && (
+                                                        {(v.status === 'AT_SECURITY_OUT' || v.status === 'SALES_AT_SECURITY_EXIT') && (
                                                             <button
                                                                 onClick={() => handleExit(v.id)}
                                                                 className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-bold hover:bg-slate-900 transition-colors flex items-center gap-1"
@@ -769,235 +810,245 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-                </div>
+                    </div >
+                </div >
             )}
 
 
             {/* View Photos Modal */}
             {/* View Photos Modal */}
-            {viewPhotos && (
-                <PhotoGalleryModal
-                    photos={viewPhotos}
-                    onClose={() => setViewPhotos(null)}
-                />
-            )}
+            {
+                viewPhotos && (
+                    <PhotoGalleryModal
+                        photos={viewPhotos}
+                        onClose={() => setViewPhotos(null)}
+                    />
+                )
+            }
 
 
 
             {/* RETURNS TAB */}
-            {activeTab === 'RETURNS' && (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-fade-in">
-                    <div className="p-4 border-b border-slate-100 bg-red-50 text-red-800 flex items-center gap-2">
-                        <AlertTriangle size={18} />
-                        <span className="font-bold">Rejected / Return Material Vehicles</span>
-                    </div>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-200">
-                                <tr>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Date/Time</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">ID / Vehicle</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Supplier</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Rejection Reason</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {returnsVehicles.length === 0 ? (
+            {
+                activeTab === 'RETURNS' && (
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-fade-in">
+                        <div className="p-4 border-b border-slate-100 bg-red-50 text-red-800 flex items-center gap-2">
+                            <AlertTriangle size={18} />
+                            <span className="font-bold">Rejected / Return Material Vehicles</span>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-slate-50 border-b border-slate-200">
                                     <tr>
-                                        <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No return vehicles pending.</td>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Date/Time</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">ID / Vehicle</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Supplier</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Rejection Reason</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Action</th>
                                     </tr>
-                                ) : (
-                                    returnsVehicles.map(v => (
-                                        <tr key={v.id} className="hover:bg-slate-50">
-                                            <td className="px-6 py-4 text-slate-500">
-                                                {v.hodDecisionTime ? new Date(v.hodDecisionTime).toLocaleDateString() : new Date(v.entryTime).toLocaleDateString()}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="font-medium text-slate-900">{v.vehicleNo}</div>
-                                                <div className="text-xs text-slate-400 font-mono">{v.uniqueID}</div>
-                                            </td>
-                                            <td className="px-6 py-4 text-slate-500">{v.supplierName}</td>
-                                            <td className="px-6 py-4 text-red-600 italic">
-                                                {v.hodRemarks || 'Rejected by QC/HOD'}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <StatusBadge status={v.status} />
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {v.status === 'REJECTED_RETURN_PENDING' && (
-                                                    <button
-                                                        onClick={() => handleReturnEntryClick(v.id)}
-                                                        className="px-3 py-1.5 bg-brand-600 text-white rounded-lg text-sm font-bold hover:bg-brand-700 shadow-sm transition-colors flex items-center gap-2"
-                                                    >
-                                                        <LogIn size={16} /> Allow Entry
-                                                    </button>
-                                                )}
-                                                {v.status === 'RETURN_AT_SECURITY_OUT' && (
-                                                    <button
-                                                        onClick={() => handleExit(v.id)}
-                                                        className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-900 shadow-sm transition-colors flex items-center gap-2"
-                                                    >
-                                                        <LogOut size={16} /> Gate Out (Close)
-                                                    </button>
-                                                )}
-                                                <button
-                                                    onClick={() => { setSelectedLogs(v.logs || []); setShowLogModal(true); }}
-                                                    className="block mt-2 text-slate-400 hover:text-brand-600 font-medium text-xs flex items-center gap-1"
-                                                >
-                                                    <History size={14} /> Logs
-                                                </button>
-                                            </td>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {returnsVehicles.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No return vehicles pending.</td>
                                         </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                                    ) : (
+                                        returnsVehicles.map(v => (
+                                            <tr key={v.id} className="hover:bg-slate-50">
+                                                <td className="px-6 py-4 text-slate-500">
+                                                    {v.hodDecisionTime ? new Date(v.hodDecisionTime).toLocaleDateString() : new Date(v.entryTime).toLocaleDateString()}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="font-medium text-slate-900">{v.vehicleNo}</div>
+                                                    <div className="text-xs text-slate-400 font-mono">{v.uniqueID}</div>
+                                                </td>
+                                                <td className="px-6 py-4 text-slate-500">{v.supplierName}</td>
+                                                <td className="px-6 py-4 text-red-600 italic">
+                                                    {v.hodRemarks || 'Rejected by QC/HOD'}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <StatusBadge status={v.status} />
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    {v.status === 'REJECTED_RETURN_PENDING' && (
+                                                        <button
+                                                            onClick={() => handleReturnEntryClick(v.id)}
+                                                            className="px-3 py-1.5 bg-brand-600 text-white rounded-lg text-sm font-bold hover:bg-brand-700 shadow-sm transition-colors flex items-center gap-2"
+                                                        >
+                                                            <LogIn size={16} /> Allow Entry
+                                                        </button>
+                                                    )}
+                                                    {v.status === 'RETURN_AT_SECURITY_OUT' && (
+                                                        <button
+                                                            onClick={() => handleExit(v.id)}
+                                                            className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-900 shadow-sm transition-colors flex items-center gap-2"
+                                                        >
+                                                            <LogOut size={16} /> Gate Out (Close)
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        onClick={() => { setSelectedLogs(v.logs || []); setShowLogModal(true); }}
+                                                        className="block mt-2 text-slate-400 hover:text-brand-600 font-medium text-xs flex items-center gap-1"
+                                                    >
+                                                        <History size={14} /> Logs
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* HISTORY TAB */}
-            {activeTab === 'HISTORY' && (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-fade-in">
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-200">
-                                <tr>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Date/Time</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Vehicle No</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Supplier</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Register</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Photos</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
-                                    <th className="px-6 py-4 font-semibold text-slate-700">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {historySecurity.length === 0 ? (
+            {
+                activeTab === 'HISTORY' && (
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-fade-in">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-slate-50 border-b border-slate-200">
                                     <tr>
-                                        <td colSpan="7" className="px-6 py-8 text-center text-slate-500">No security history found.</td>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Date/Time</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Vehicle No</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Supplier</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Register</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Photos</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
+                                        <th className="px-6 py-4 font-semibold text-slate-700">Action</th>
                                     </tr>
-                                ) : (
-                                    historySecurity.map(v => (
-                                        <tr key={v.id} className="hover:bg-slate-50">
-                                            <td className="px-6 py-4 text-slate-500">{new Date(v.entryTime).toLocaleString()}</td>
-                                            <td className="px-6 py-4 font-medium text-slate-900">{v.vehicleNo}</td>
-                                            <td className="px-6 py-4 text-slate-500">{v.supplierName}</td>
-                                            <td className="px-6 py-4 text-slate-500">{(Object.values(SECURITY_REGISTERS).find(r => r.id === v.registerId)?.label) || '-'}</td>
-                                            <td className="px-6 py-4">
-                                                {v.attachments && v.attachments.length > 0 ? (
-                                                    <button
-                                                        onClick={() => setViewPhotos(v.attachments)}
-                                                        className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
-                                                    >
-                                                        <Camera size={14} /> View ({v.attachments.length})
-                                                    </button>
-                                                ) : (
-                                                    <span className="text-slate-400 text-xs text-center block w-12">-</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                                                    Exited
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <button
-                                                    onClick={() => { setSelectedLogs(v.logs || []); setShowLogModal(true); }}
-                                                    className="text-brand-600 hover:text-brand-800 font-medium text-xs flex items-center gap-1"
-                                                >
-                                                    <History size={14} /> Logs
-                                                </button>
-                                            </td>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {historySecurity.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="7" className="px-6 py-8 text-center text-slate-500">No security history found.</td>
                                         </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                                    ) : (
+                                        historySecurity.map(v => (
+                                            <tr key={v.id} className="hover:bg-slate-50">
+                                                <td className="px-6 py-4 text-slate-500">{new Date(v.entryTime).toLocaleString()}</td>
+                                                <td className="px-6 py-4 font-medium text-slate-900">{v.vehicleNo}</td>
+                                                <td className="px-6 py-4 text-slate-500">{v.supplierName}</td>
+                                                <td className="px-6 py-4 text-slate-500">{(Object.values(SECURITY_REGISTERS).find(r => r.id === v.registerId)?.label) || '-'}</td>
+                                                <td className="px-6 py-4">
+                                                    {v.attachments && v.attachments.length > 0 ? (
+                                                        <button
+                                                            onClick={() => setViewPhotos(v.attachments)}
+                                                            className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200 transition-colors"
+                                                        >
+                                                            <Camera size={14} /> View ({v.attachments.length})
+                                                        </button>
+                                                    ) : (
+                                                        <span className="text-slate-400 text-xs text-center block w-12">-</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                                                        Exited
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <button
+                                                        onClick={() => { setSelectedLogs(v.logs || []); setShowLogModal(true); }}
+                                                        className="text-brand-600 hover:text-brand-800 font-medium text-xs flex items-center gap-1"
+                                                    >
+                                                        <History size={14} /> Logs
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            }
             {/* Return Entry Modal */}
-            {showReturnModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
-                        <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                            <Truck className="text-brand-600" /> Return Vehicle Entry
-                        </h3>
-                        <form onSubmit={confirmReturnEntry}>
-                            <label className="block text-sm font-medium text-slate-700 mb-2">
-                                New Vehicle Number (for Pickup)
-                            </label>
-                            <input
-                                type="text"
-                                required
-                                className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 outline-none uppercase font-bold"
-                                placeholder="AP00XX0000"
-                                value={newReturnVehicleNo}
-                                onChange={(e) => setNewReturnVehicleNo(e.target.value)}
-                            />
-                            <div className="flex gap-3 mt-6">
-                                <button
-                                    type="button"
-                                    onClick={() => setShowReturnModal(false)}
-                                    className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    className="flex-1 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold shadow-lg"
-                                >
-                                    Confirm Entry
-                                </button>
-                            </div>
-                        </form>
+            {
+                showReturnModal && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+                        <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
+                            <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                                <Truck className="text-brand-600" /> Return Vehicle Entry
+                            </h3>
+                            <form onSubmit={confirmReturnEntry}>
+                                <label className="block text-sm font-medium text-slate-700 mb-2">
+                                    New Vehicle Number (for Pickup)
+                                </label>
+                                <input
+                                    type="text"
+                                    required
+                                    className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 outline-none uppercase font-bold"
+                                    placeholder="AP00XX0000"
+                                    value={newReturnVehicleNo}
+                                    onChange={(e) => setNewReturnVehicleNo(e.target.value)}
+                                />
+                                <div className="flex gap-3 mt-6">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowReturnModal(false)}
+                                        className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="flex-1 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold shadow-lg"
+                                    >
+                                        Confirm Entry
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Expected Vehicles Bubble (only for Feed Dispatch) */}
-            {activeTab === 'feed_dispatch' && expectedSalesVehicles.length > 0 && !isEditing && (
-                <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl animate-fade-in">
-                    <h4 className="flex items-center gap-2 font-bold text-blue-800 mb-3">
-                        <Truck size={18} /> Sales Vehicles Expected (Called by Sales)
-                    </h4>
-                    <div className="flex flex-wrap gap-2">
-                        {expectedSalesVehicles.map(v => (
-                            <button
-                                key={v.id}
-                                onClick={() => {
-                                    const invoice = v.generatedInvoices?.[0] || {};
-                                    const order = v.assignedOrders?.[0] || {};
+            {
+                activeTab === 'feed_dispatch' && expectedSalesVehicles.length > 0 && !isEditing && (
+                    <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl animate-fade-in">
+                        <h4 className="flex items-center gap-2 font-bold text-blue-800 mb-3">
+                            <Truck size={18} /> Sales Vehicles Expected (Called by Sales)
+                        </h4>
+                        <div className="flex flex-wrap gap-2">
+                            {expectedSalesVehicles.map(v => (
+                                <button
+                                    key={v.id}
+                                    onClick={() => {
+                                        const invoice = v.generatedInvoices?.[0] || {};
+                                        const order = v.assignedOrders?.[0] || {};
 
-                                    // Calculate Bags
-                                    const totalQtyMT = v.assignedOrders?.reduce((sum, o) => sum + Number(o.qty), 0) || 0;
-                                    const totalBags = Math.ceil((totalQtyMT * 1000) / 25);
+                                        // Calculate Bags
+                                        const totalQtyMT = v.assignedOrders?.reduce((sum, o) => sum + Number(o.qty), 0) || 0;
+                                        const totalBags = Math.ceil((totalQtyMT * 1000) / 25);
 
-                                    setFormData({
-                                        vehicleNo: v.vehicleNo,
-                                        driverName: v.driverName,
-                                        descriptionOfFeed: order.product || 'Feed',
-                                        dcNo: invoice.id || '', // DC No is Invoice No
-                                        invoiceDate: invoice.date || new Date().toISOString().split('T')[0],
-                                        destinationAddress: order.customer ? `${order.customer}, ${order.region}` : '',
-                                        noOfBags: totalBags,
-                                        // vehicleArrivingDate and remarks remain empty as requested
-                                    });
-                                    // Also set reference to this expected vehicle so we update IT instead of identifying solely by string
-                                    // Actually, we can just use the vehicleNo to match logic in handleSave
-                                }}
-                                className="px-3 py-1.5 bg-white border border-blue-200 shadow-sm rounded-lg text-sm font-medium text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-all active:scale-95"
-                            >
-                                {v.vehicleNo}
-                            </button>
-                        ))}
+                                        setFormData({
+                                            vehicleNo: v.vehicleNo,
+                                            driverName: v.driverName,
+                                            descriptionOfFeed: order.product || 'Feed',
+                                            dcNo: invoice.id || '', // DC No is Invoice No
+                                            invoiceDate: invoice.date || new Date().toISOString().split('T')[0],
+                                            destinationAddress: order.customer ? `${order.customer}, ${order.region}` : '',
+                                            noOfBags: totalBags,
+                                            // vehicleArrivingDate and remarks remain empty as requested
+                                        });
+                                        // Also set reference to this expected vehicle so we update IT instead of identifying solely by string
+                                        // Actually, we can just use the vehicleNo to match logic in handleSave
+                                    }}
+                                    className="px-3 py-1.5 bg-white border border-blue-200 shadow-sm rounded-lg text-sm font-medium text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-all active:scale-95"
+                                >
+                                    {v.vehicleNo}
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Log Viewer Modal */}
             <LogViewerModal
@@ -1006,7 +1057,7 @@ const SecurityModule = ({ vehicles, setVehicles, updateStatus, showAlert, showCo
                 logs={selectedLogs}
                 title="Vehicle Audit Logs"
             />
-        </div>
+        </div >
     );
 };
 

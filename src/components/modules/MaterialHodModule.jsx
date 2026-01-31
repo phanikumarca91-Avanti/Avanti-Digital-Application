@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { FileCheck, XCircle, CheckCircle, Clock, AlertTriangle, FileText, Filter, Search, History } from 'lucide-react';
 import StatusBadge from '../shared/StatusBadge';
 import LogViewerModal from '../shared/LogViewerModal';
+import { useVehicles } from '../../contexts/VehicleContext';
 
-const MaterialHodModule = ({ vehicles, updateStatus, showAlert, showConfirm }) => {
+const MaterialHodModule = ({ showAlert, showConfirm }) => {
+    const { vehicles, updateVehicle } = useVehicles();
     const [activeTab, setActiveTab] = useState('PENDING');
     const [showLogModal, setShowLogModal] = useState(false);
     const [selectedLogs, setSelectedLogs] = useState([]);
@@ -26,6 +28,16 @@ const MaterialHodModule = ({ vehicles, updateStatus, showAlert, showConfirm }) =
         (v.status === 'COMPLETED' || v.status === 'REJECTED_RETURN_PENDING' || v.status === 'RETURN_VEHICLE_INSIDE' || v.status === 'RETURN_COMPLETED') &&
         v.isProvisional === true // Flag to identify these were provisional
     );
+
+    // Helper to match legacy prop signature
+    const updateStatus = (id, status, data, logAction) => {
+        updateVehicle(id, { status, ...data }, logAction ? {
+            stage: 'HOD',
+            action: logAction,
+            timestamp: new Date().toISOString(),
+            user: 'HOD_USER'
+        } : null);
+    };
 
     const handleApprove = (vehicleAndId) => {
         showConfirm(`Approve Provisional GRN ${vehicleAndId.documents?.grn || ''}? This will convert it to a Final GRN.`, () => {

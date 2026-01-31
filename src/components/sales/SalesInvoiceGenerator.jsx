@@ -7,18 +7,18 @@ import PhotoGalleryModal from '../shared/PhotoGalleryModal';
 import { useSales } from '../../contexts/SalesContext';
 import { useWarehouse } from '../../contexts/WarehouseContext';
 
-const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUpdateInvoiceStatus, showAlert, appVehicles, setAppVehicles }) => {
+const SalesInvoiceGenerator = ({ plannedVehicles, lots, updateDispatchPlan, removeFromDispatchPlan, showAlert, appVehicles, addVehicle, updateVehicle }) => {
     const { updateBinStock } = useWarehouse();
+    const { generateInvoice } = useSales();
     const [selectedVehicle, setSelectedVehicle] = useState(null);
     const [showPreview, setShowPreview] = useState(false);
     const [activeSubTab, setActiveSubTab] = useState('PENDING'); // 'PENDING' | 'GENERATED'
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Camera State
     const [showCamera, setShowCamera] = useState(false);
     const [currentVehicleId, setCurrentVehicleId] = useState(null);
     const [viewPhotos, setViewPhotos] = useState(null);
-
-    // const { vehicles, setVehicles } = useSales(); // REMOVED: Using props appVehicles instead
 
     // Draggable Modal State
     const [modalPosition, setModalPosition] = useState({ x: 0, y: 0 });
@@ -81,13 +81,7 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
 
     const handleReturnToPlan = (vehicleId) => {
         if (window.confirm("Return this vehicle to Dispatch Plan? Invoices will not be generated.")) {
-            setPlannedVehicles(prev => prev.map(pv => {
-                if (pv.id === vehicleId) {
-                    const { stage, ...rest } = pv; // Remove stage property or set to DRAFT
-                    return { ...rest, stage: 'DRAFT' };
-                }
-                return pv;
-            }));
+            updateDispatchPlan(vehicleId, { stage: 'DRAFT' });
         }
     };
 
@@ -99,25 +93,18 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
     const handlePhotoCapture = (imageData) => {
         if (!currentVehicleId) return;
 
-        setPlannedVehicles(prev => prev.map(v => {
-            if (v.id === currentVehicleId) {
-                const newAttachments = [...(v.attachments || []), imageData];
-                return { ...v, attachments: newAttachments };
-            }
-            return v;
-        }));
-
-        showAlert("Photo captured and attached to vehicle!");
+        const currentV = plannedVehicles.find(v => v.id === currentVehicleId);
+        if (currentV) {
+            updateDispatchPlan(currentVehicleId, { attachments: [...(currentV.attachments || []), imageData] });
+            showAlert("Photo captured and attached to vehicle!");
+        }
     };
 
     const handleGenerateInvoice = (vehicle) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
         // Prepare data for invoice
         // For simplicity, we create one invoice per vehicle containing all orders (or one per order?)
-        // The requirement says "Vehicle and Unit assigned orders should populate...". 
-        // Typically one invoice per customer. If vehicle has multiple customers, we might need multiple invoices.
-        // Let's assume one Invoice per Vehicle for now as "Bill of Supply" often covers the shipment. 
-        // BUT standard practice: 1 Invoice per Receiver. 
-        // Let's group by Customer.
 
         // Check if invoices already exist to avoid regenerating IDs
         if (vehicle.generatedInvoices && vehicle.generatedInvoices.length > 0) {
@@ -163,13 +150,6 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
                 if (item.lots && item.lots.length > 0) {
                     item.lots.forEach(lot => {
                         // Deduct from Warehouse Bay
-                        // lot.bay contains the Bay ID (e.g. FGFK1A5)
-                        // lot.qty is in KG. updateBinStock expects MT? 
-                        // Let's check updateBinStock signature: (binId, qty, material, operation)
-                        // In WarehouseContext: newQty += parseFloat(qty) (or -=).
-                        // It depends on what unit the Bays store. They store MT usually (Qty 18 MT).
-                        // But lot.qty here is in KG (takenQty in allocateLotsFIFO).
-                        // So convert back to MT: lot.qty / 1000.
                         if (lot.bay && lot.bay !== '-') {
                             const qtyMT = lot.qty / 1000;
                             updateBinStock(lot.bay, qtyMT, item.product, 'REMOVE');
@@ -183,24 +163,30 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
         // Center the modal initially
         setModalPosition({ x: window.innerWidth / 2 - 450, y: 50 });
         setShowPreview(true);
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleCallForVehicle = (vehicle) => {
-        if (!window.confirm(`Call vehicle ${vehicle.vehicleNo} to Security Gate?`)) return;
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+        if (!window.confirm(`Call vehicle ${vehicle.vehicleNo} to Security Gate?`)) {
+            setIsSubmitting(false);
+            return;
+        }
 
         // 1. Update Planned Vehicle Stage
-        setPlannedVehicles(prev => prev.map(pv =>
-            pv.id === vehicle.id ? { ...pv, stage: 'DISPATCH_READY' } : pv
-        ));
+        updateDispatchPlan(vehicle.id, { stage: 'DISPATCH_READY' });
 
         // 2. Create/Update Global Vehicle Entry for Security
-        const existingVehicle = appVehicles.find(v => v.vehicleNo === vehicle.vehicleNo && !v.status.includes('COMPLETED'));
+        const existingVehicle = appVehicles && appVehicles.find(v => v.vehicleNo === vehicle.vehicleNo && !v.status.includes('COMPLETED'));
 
         if (existingVehicle) {
             // Update existing active vehicle
-            setAppVehicles(prev => prev.map(v =>
-                v.id === existingVehicle.id ? { ...v, status: 'SALES_EXPECTED_AT_SECURITY', assignedOrders: vehicle.assignedOrders, generatedInvoices: vehicle.generatedInvoices } : v
-            ));
+            updateVehicle(existingVehicle.id, {
+                status: 'SALES_EXPECTED_AT_SECURITY',
+                assignedOrders: vehicle.assignedOrders,
+                generatedInvoices: vehicle.generatedInvoices
+            });
         } else {
             // Create new expected vehicle
             const newVehicle = {
@@ -214,10 +200,11 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
                 generatedInvoices: vehicle.generatedInvoices, // Pass invoice data
                 plannedWeight: vehicle.assignedOrders.reduce((sum, o) => sum + Number(o.qty), 0) * 1000 // Convert MT to KG approx
             };
-            setAppVehicles(prev => [newVehicle, ...prev]);
+            addVehicle(newVehicle);
         }
 
         showAlert(`Vehicle ${vehicle.vehicleNo} called! Security notified.`);
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     // Drag Handlers
@@ -325,6 +312,7 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
                                 </button>
                                 <button
                                     onClick={() => handleGenerateInvoice(vehicle)}
+                                    disabled={isSubmitting}
                                     className={`flex-1 py-2 ${activeSubTab === 'GENERATED' ? 'bg-slate-800 hover:bg-slate-900' : 'bg-brand-600 hover:bg-brand-700'} text-white rounded-lg font-bold flex items-center justify-center gap-2 transition-colors`}
                                 >
                                     {activeSubTab === 'GENERATED' ? <Eye size={18} /> : <FileText size={18} />}
@@ -379,13 +367,33 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
                                 </button>
                                 {activeSubTab === 'PENDING' && (
                                     <button
-                                        onClick={() => {
+                                        onClick={async () => {
+                                            if (isSubmitting) return;
                                             if (window.confirm('Are you sure you want to finalize this invoice? It will be moved to History.')) {
-                                                setPlannedVehicles(prev => prev.map(v => v.id === selectedVehicle.id ? { ...v, stage: 'INVOICED', generatedInvoices: selectedVehicle.generatedInvoices } : v));
-                                                setShowPreview(false);
-                                                showAlert('Invoice finalized and moved to History!');
+                                                setIsSubmitting(true);
+                                                try {
+                                                    // 1. Save to Supabase
+                                                    for (const inv of selectedVehicle.generatedInvoices) {
+                                                        await generateInvoice(inv);
+                                                    }
+
+                                                    // 2. Update Local/Planned State -> Sync to Cloud
+                                                    updateDispatchPlan(selectedVehicle.id, {
+                                                        stage: 'INVOICED',
+                                                        generatedInvoices: selectedVehicle.generatedInvoices
+                                                    });
+
+                                                    setShowPreview(false);
+                                                    showAlert('Invoice finalized and saved to Cloud!');
+                                                } catch (error) {
+                                                    console.error("Save Failed", error);
+                                                    showAlert("Failed to save invoice to cloud. Please try again.");
+                                                } finally {
+                                                    setTimeout(() => setIsSubmitting(false), 1000);
+                                                }
                                             }
                                         }}
+                                        disabled={isSubmitting}
                                         className="px-4 py-2 bg-green-600 text-white font-bold rounded-lg flex items-center gap-2 hover:bg-green-700"
                                     >
                                         <Check size={18} /> Finalize & Save
@@ -397,6 +405,7 @@ const SalesInvoiceGenerator = ({ plannedVehicles, setPlannedVehicles, lots, onUp
                                             handleCallForVehicle(selectedVehicle);
                                             setShowPreview(false);
                                         }}
+                                        disabled={isSubmitting}
                                         className="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg flex items-center gap-2 hover:bg-blue-700"
                                     >
                                         <Truck size={18} /> Call for Vehicle

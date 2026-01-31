@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { MASTER_DATA as INITIAL_DATA } from '../data/masterData';
+import { supabase } from '../lib/supabase';
 
 const MasterDataContext = createContext();
 
@@ -23,23 +24,66 @@ export const MasterDataProvider = ({ children }) => {
         }
     });
 
-    // 2. Persist User Changes only
+    // 1b. Load from Cloud on Mount (Sync)
+    const [cloudBaseData, setCloudBaseData] = useState(null);
+
+    useEffect(() => {
+        const syncFromCloud = async () => {
+            // Fetch Changes
+            const changesPromise = supabase.from('master_data').select('value').eq('key', 'master_data_changes_v1').single();
+
+            // Fetch Base Data (All Chunks)
+            // We fetch all keys starting with master_data_base_v1_
+            const basePromise = supabase.from('master_data').select('key, value').like('key', 'master_data_base_v1_%');
+
+            const [changesResult, baseResult] = await Promise.all([changesPromise, basePromise]);
+
+            if (changesResult.data && !changesResult.error && changesResult.data.value) {
+                setUserChanges(changesResult.data.value);
+                localStorage.setItem('master_data_changes_v1', JSON.stringify(changesResult.data.value));
+            }
+
+            if (baseResult.data && !baseResult.error && baseResult.data.length > 0) {
+                console.log("Using Cloud Base Master Data (Chunks)");
+                const reconstructedBase = {};
+                baseResult.data.forEach(row => {
+                    // key is "master_data_base_v1_SUPPLIERS" -> category is "SUPPLIERS"
+                    const category = row.key.replace('master_data_base_v1_', '');
+                    reconstructedBase[category] = row.value;
+                });
+                setCloudBaseData(reconstructedBase);
+            }
+        };
+        syncFromCloud();
+    }, []);
+
+    // 2. Persist User Changes to Local & Cloud
     useEffect(() => {
         try {
-            localStorage.setItem('master_data_changes_v1', JSON.stringify(userChanges));
+            const json = JSON.stringify(userChanges);
+            localStorage.setItem('master_data_changes_v1', json);
+
+            // Debounce or just fire-and-forget to Cloud
+            supabase.from('master_data').upsert({
+                key: 'master_data_changes_v1',
+                value: userChanges
+            }).then(({ error }) => {
+                if (error) console.error("Cloud Sync Failed", error);
+            });
+
         } catch (e) {
             console.error("Failed to save changes to localStorage (Quota Exceeded?)", e);
-            // Optional: Show a toast here if we had a toast system hooked up
         }
     }, [userChanges]);
 
     // 3. Compute Final Master Data (Merge Static + Dynamic)
     const masterData = useMemo(() => {
+        const base = cloudBaseData || INITIAL_DATA;
         // Ensure new modules have empty arrays if not in static data
         const merged = {
-            ...INITIAL_DATA,
-            SUPPLIERS: INITIAL_DATA.SUPPLIERS || [],
-            PURCHASE_ORDERS: INITIAL_DATA.PURCHASE_ORDERS || []
+            ...base,
+            SUPPLIERS: base.SUPPLIERS || [],
+            PURCHASE_ORDERS: base.PURCHASE_ORDERS || []
         };
 
         // Process each category

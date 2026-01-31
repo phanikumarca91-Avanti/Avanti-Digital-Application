@@ -5,11 +5,12 @@ import SearchableSelect from '../shared/SearchableSelect';
 import { MOCK_BAYS } from '../../data/mockBays';
 
 const WarehouseBayAssignment = ({ showAlert }) => {
-    const { getOpenMRs, assignBayToMR, bays } = useWarehouse();
+    const { getOpenMRs, assignBayToMR, bays, seedBins } = useWarehouse();
     const openMRs = getOpenMRs().filter(mr => mr.status === 'PENDING_BAY_ASSIGNMENT');
 
     const [selectedMR, setSelectedMR] = useState(null);
     const [assignments, setAssignments] = useState({}); // { itemId: bayName }
+    const [showAllBays, setShowAllBays] = useState(false);
 
     const handleBaySelect = (itemId, bay) => {
         setAssignments(prev => ({ ...prev, [itemId]: bay }));
@@ -35,23 +36,37 @@ const WarehouseBayAssignment = ({ showAlert }) => {
         showAlert(`Bays assigned for MR ${selectedMR.id}. Sent to Dumping.`);
         setSelectedMR(null);
         setAssignments({});
+        setShowAllBays(false);
     };
 
     const getAvailableBays = (item) => {
         // Filter bays that have the required material and non-zero quantity
         const available = bays.filter(b => {
-            const bayMaterial = (b.material || '').trim().toLowerCase();
-            const reqMaterial = (item.name || '').trim().toLowerCase();
-            const materialMatch = bayMaterial === reqMaterial;
-            const hasQty = parseFloat(b.qty) > 0;
-            const isOccupied = b.status === 'OCCUPIED';
+            // STRICT RULE: Only show Raw Material (RM) Bays
+            if (!b.id.startsWith('RM')) return false;
 
-            return materialMatch && isOccupied && hasQty;
+            if (showAllBays) {
+                // Return ANY bay that has stock (occupied or qty > 0)
+                return b.status === 'OCCUPIED' || parseFloat(b.qty) > 0;
+            }
+
+            const normalize = (str) => (str || '').toLowerCase().replace(/\s+/g, ' ').replace(/\s*-\s*/g, '-').trim();
+            const bayMaterial = normalize(b.material);
+            const reqMaterial = normalize(item.name);
+
+            // Allow loose matching
+            const materialMatch = bayMaterial === reqMaterial || bayMaterial.includes(reqMaterial) || reqMaterial.includes(bayMaterial);
+            const hasQty = parseFloat(b.qty) > 0;
+            // Relax occupancy check slightly: If it has Qty > 0, it's effectively occupied/available for picking
+            const isOccupied = b.status === 'OCCUPIED' || hasQty;
+
+            return materialMatch && isOccupied;
         });
 
         return available.map(b => ({
             id: b.name,
-            name: `${b.name} - ${b.qty} ${b.uom} (${b.material})`
+            name: `${b.name} - ${b.qty} ${b.uom} (${b.material})`,
+            value: b.name // Return ID as value, not the displayed name
         }));
     };
 
@@ -100,32 +115,57 @@ const WarehouseBayAssignment = ({ showAlert }) => {
                                 <h2 className="text-xl font-bold text-slate-800">Assign Source Bays</h2>
                                 <p className="text-sm text-slate-500">Select where to pick materials for {selectedMR.id}</p>
                             </div>
-                            <button
-                                onClick={handleSubmit}
-                                className="bg-brand-600 hover:bg-brand-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors"
-                            >
-                                <CheckCircle size={18} /> Confirm Assignment
-                            </button>
+                            <div className="flex items-center gap-4">
+                                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={showAllBays}
+                                        onChange={(e) => setShowAllBays(e.target.checked)}
+                                        className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                                    />
+                                    Show All Occupied Bays
+                                </label>
+                                <button
+                                    onClick={handleSubmit}
+                                    className="bg-brand-600 hover:bg-brand-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors"
+                                >
+                                    <CheckCircle size={18} /> Confirm Assignment
+                                </button>
+                            </div>
                         </div>
 
                         <div className="space-y-4">
-                            {selectedMR.items.map(item => (
-                                <div key={item.id} className="bg-slate-50 p-4 rounded-lg border border-slate-200 flex flex-col md:flex-row items-center gap-4">
-                                    <div className="flex-1">
-                                        <h4 className="font-bold text-slate-700">{item.name}</h4>
-                                        <p className="text-sm text-slate-500">Required: <span className="font-mono font-bold">{item.qty} {item.uom}</span></p>
+                            {selectedMR.items.map(item => {
+                                const availableBays = getAvailableBays(item);
+                                return (
+                                    <div key={item.id} className="bg-slate-50 p-4 rounded-lg border border-slate-200 flex flex-col md:flex-row items-center gap-4">
+                                        <div className="flex-1">
+                                            <h4 className="font-bold text-slate-700">{item.name}</h4>
+                                            <p className="text-sm text-slate-500">Required: <span className="font-mono font-bold">{item.qty} {item.uom}</span></p>
+                                        </div>
+                                        <div className="w-full md:w-64">
+                                            <SearchableSelect
+                                                label="Source Bay"
+                                                placeholder="Select Bay..."
+                                                options={availableBays}
+                                                value={assignments[item.id] || ''}
+                                                onChange={(e) => handleBaySelect(item.id, e.target.value)}
+                                            />
+                                            {availableBays.length === 0 && (
+                                                <div className="mt-2 text-xs text-red-500 flex items-center justify-end gap-1">
+                                                    <span>No RM Stock.</span>
+                                                    <button
+                                                        onClick={() => { seedBins(); setShowAllBays(true); }}
+                                                        className="underline font-bold hover:text-red-700"
+                                                    >
+                                                        Add Test Stock
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="w-full md:w-64">
-                                        <SearchableSelect
-                                            label="Source Bay"
-                                            placeholder="Select Bay..."
-                                            options={getAvailableBays(item)}
-                                            value={assignments[item.id] || ''}
-                                            onChange={(e) => handleBaySelect(item.id, e.target.value)}
-                                        />
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
                 ) : (

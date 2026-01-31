@@ -3,17 +3,41 @@ import { FileText, CheckCircle, AlertTriangle, FileCheck, FileX, History } from 
 import StatusBadge from '../shared/StatusBadge';
 import ERPDocument from './ERPDocument';
 import LogViewerModal from '../shared/LogViewerModal';
+import { useVehicles } from '../../contexts/VehicleContext';
 
-const ERPModule = ({ vehicles, updateStatus, showAlert, openDocument }) => {
+const ERPModule = ({ showAlert, openDocument }) => {
+    const { vehicles, updateVehicle } = useVehicles();
     const [viewingDoc, setViewingDoc] = useState(null);
     const [activeTab, setActiveTab] = useState('PENDING');
     const [showLogModal, setShowLogModal] = useState(false);
     const [selectedLogs, setSelectedLogs] = useState([]);
-    const pendingERP = vehicles.filter(v => v.status === 'AT_ERP' || v.status === 'RETURN_AT_ERP');
-    const historyERP = vehicles.filter(v => v.status === 'AT_SECURITY_OUT' || v.status === 'COMPLETED' || v.status === 'RETURN_AT_SECURITY_OUT' || v.status === 'RETURN_COMPLETED');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // Check if vehicles is undefined before filtering
+    const safeVehicles = vehicles || [];
+    const pendingERP = safeVehicles.filter(v => v.status === 'AT_ERP' || v.status === 'RETURN_AT_ERP');
+    const historyERP = safeVehicles.filter(v =>
+        v.status === 'AT_SECURITY_OUT' ||
+        v.status === 'COMPLETED' ||
+        v.status === 'RETURN_AT_SECURITY_OUT' ||
+        v.status === 'RETURN_COMPLETED'
+    );
+
+    // Helper to match legacy prop signature
+    const updateStatus = (id, status, data, logAction) => {
+        updateVehicle(id, { status, ...data }, logAction ? {
+            stage: 'ERP',
+            action: logAction,
+            timestamp: new Date().toISOString(),
+            user: 'ERP_OFFICER'
+        } : null);
+    };
 
     const handleGenerateDoc = (id, type) => {
-        const vehicle = vehicles.find(v => v.id === id);
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
+        const vehicle = safeVehicles.find(v => v.id === id);
         let docName = '';
         const rate = parseFloat(vehicle.ratePerUOM) || 0;
         const netWeight = parseFloat(vehicle.netWeight) || 0;
@@ -92,12 +116,16 @@ const ERPModule = ({ vehicles, updateStatus, showAlert, openDocument }) => {
             showAlert(`Return DN Generated: ${docName}. Please review and release.`);
             setViewingDoc({ vehicle: { ...vehicle, documents: { ...vehicle.documents, debitNote: docName } }, type: 'DEBIT_NOTE' });
         }
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     const handleRelease = (id, isReturn = false) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
         const nextStatus = isReturn ? 'RETURN_AT_SECURITY_OUT' : 'AT_SECURITY_OUT';
         updateStatus(id, nextStatus, {}, 'Released from ERP');
         showAlert(`Vehicle ${isReturn ? 'Returned' : 'Released'} to Security Gate Out.`);
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (
@@ -231,6 +259,7 @@ const ERPModule = ({ vehicles, updateStatus, showAlert, openDocument }) => {
                                                         </button>
                                                         <button
                                                             onClick={() => handleRelease(v.id, v.status === 'RETURN_AT_ERP')}
+                                                            disabled={isSubmitting}
                                                             className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2"
                                                         >
                                                             <CheckCircle size={18} /> Release Vehicle
@@ -239,6 +268,7 @@ const ERPModule = ({ vehicles, updateStatus, showAlert, openDocument }) => {
                                                 ) : (
                                                     <button
                                                         onClick={() => handleGenerateDoc(v.id, v.status === 'RETURN_AT_ERP' ? 'RETURN_DN' : (isObservation ? 'PROV_GRN' : (shortQty > 0 ? 'GRN_WITH_DN' : 'GRN')))}
+                                                        disabled={isSubmitting}
                                                         className={`w-full py-3 ${v.status === 'RETURN_AT_ERP' ? 'bg-red-600 hover:bg-red-700 shadow-red-500/20' : (isObservation ? 'bg-yellow-500 hover:bg-yellow-600 shadow-yellow-500/20' : 'bg-brand-600 hover:bg-brand-700 shadow-brand-500/20')} text-white rounded-lg font-bold shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2`}
                                                     >
                                                         <FileCheck size={18} />

@@ -4,9 +4,10 @@ import * as XLSX from 'xlsx';
 
 import { ORGANIZATION } from '../../config/organization';
 
-const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles, onUpdateOrders, showAlert }) => {
+const DispatchPlanner = ({ orders, vehicles, plannedVehicles, addToDispatchPlan, updateDispatchPlan, removeFromDispatchPlan, updateOrderStatus, showAlert }) => {
     // State for the planning session
     const [draggedOrder, setDraggedOrder] = useState(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Flatten Organization Units for Dropdown
     const unitOptions = ORGANIZATION.locations.flatMap(loc =>
@@ -22,8 +23,8 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
         v.status === 'AVAILABLE' && !plannedVehicles.some(pv => pv.id === v.id)
     );
 
-    // Filter active plan (exclude submitted)
-    const activePlannedVehicles = plannedVehicles.filter(pv => pv.stage !== 'SUBMITTED');
+    // Filter active plan (Show only DRAFT)
+    const activePlannedVehicles = plannedVehicles.filter(pv => !pv.stage || pv.stage === 'DRAFT');
 
     // Filter unassigned orders
     const unassignedOrders = orders.filter(o => o.status === 'PENDING');
@@ -36,51 +37,37 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
     };
 
     // Handle Drop on Vehicle
-    const handleDrop = (e, vehicleId) => {
+    const handleDrop = async (e, vehicleId) => {
         e.preventDefault();
-        if (!draggedOrder) return;
+        if (!draggedOrder || isSubmitting) return;
+        setIsSubmitting(true);
 
         // Find if vehicle is already in plan
-        const existingPlanIndex = plannedVehicles.findIndex(pv => pv.id === vehicleId && pv.stage !== 'SUBMITTED');
-        let targetVehicle = existingPlanIndex >= 0 ? plannedVehicles[existingPlanIndex] : null;
+        let targetVehicle = plannedVehicles.find(pv => pv.id === vehicleId && pv.stage !== 'SUBMITTED');
 
-        // If not in plan, create new entry from master data
-        if (!targetVehicle) {
-            const vehicleData = vehicles.find(v => v.id === vehicleId);
-            targetVehicle = { ...vehicleData, assignedOrders: [] };
-        }
-
-        // Calculate current load
-        const currentLoad = targetVehicle.assignedOrders.reduce((sum, o) => sum + o.qty, 0);
+        // Get vehicle Meta from Fleet list (for capacity check if new)
+        const vehicleMeta = vehicles.find(v => v.id === vehicleId) || targetVehicle;
 
         // Check Capacity
-        if (currentLoad + draggedOrder.qty > targetVehicle.capacity) {
-            showAlert(`Cannot assign order. Exceeds vehicle capacity! (${currentLoad + draggedOrder.qty}/${targetVehicle.capacity} MT)`);
+        const currentAssigned = targetVehicle ? targetVehicle.assignedOrders : [];
+        const currentLoad = currentAssigned.reduce((sum, o) => sum + (Number(o.qty) || 0), 0);
+
+        if (currentLoad + (Number(draggedOrder.qty) || 0) > vehicleMeta.capacity) {
+            showAlert(`Cannot assign order. Exceeds vehicle capacity! (${currentLoad + (Number(draggedOrder.qty) || 0)}/${vehicleMeta.capacity} MT)`);
             setDraggedOrder(null);
             return;
         }
 
-        // Update Orders State: Remove from unassigned, add to vehicle
-        const updatedOrders = orders.map(o =>
-            o.id === draggedOrder.id ? { ...o, status: 'PLANNED', assignedVehicleId: vehicleId } : o
-        );
-        onUpdateOrders(updatedOrders);
-
-        // Update Planned Vehicles State
-        if (existingPlanIndex >= 0) {
-            // Update existing vehicle in plan
-            const updatedPlan = [...plannedVehicles];
-            updatedPlan[existingPlanIndex] = {
-                ...targetVehicle,
-                assignedOrders: [...targetVehicle.assignedOrders, draggedOrder]
-            };
-            setPlannedVehicles(updatedPlan);
-        } else {
-            // Add new vehicle to plan
-            setPlannedVehicles([...plannedVehicles, { ...targetVehicle, assignedOrders: [draggedOrder] }]);
+        // 1. If not in plan, Add to Plan first
+        if (!targetVehicle) {
+            await addToDispatchPlan(vehicleMeta);
         }
 
+        // 2. Assign Order (This updates 'orders' -> updates 'plannedVehicles' via Context)
+        await updateOrderStatus(draggedOrder.id, 'PLANNED', { assignedVehicleId: vehicleId });
+
         setDraggedOrder(null);
+        setTimeout(() => setIsSubmitting(false), 500);
     };
 
     const handleDragOver = (e) => {
@@ -89,39 +76,29 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
     };
 
     // Remove order from plan
-    const handleRemoveOrder = (vehicleId, orderId) => {
-        // Update global orders state
-        const updatedOrders = orders.map(o =>
-            o.id === orderId ? { ...o, status: 'PENDING', assignedVehicleId: null } : o
-        );
-        onUpdateOrders(updatedOrders);
+    const handleRemoveOrder = async (vehicleId, orderId) => {
+        // 1. Unassign Order
+        await updateOrderStatus(orderId, 'PENDING', { assignedVehicleId: null });
 
-        // Update local planned vehicles
-        setPlannedVehicles(prev => prev.map(pv => {
-            if (pv.id === vehicleId) {
-                return { ...pv, assignedOrders: pv.assignedOrders.filter(o => o.id !== orderId) };
-            }
-            return pv;
-        }).filter(pv => pv.assignedOrders.length > 0)); // Remove vehicle if empty
+        // 2. Check if vehicle is now empty?
+        // We assume user wants to keep vehicle unless they remove it.
+        // Optional: Auto-remove if empty preference.
     };
 
+    // Explicitly remove vehicle from plan (Add button for this?)
+    // Existing UI doesn't have "Remove Vehicle" button, only "Arrow Back" or similar implicitly?
+    // Let's add a "Remove Vehicle" button in the UI next to "Submit" or X.
+
     const handleUnitChange = (vehicleId, unitId) => {
-        setPlannedVehicles(prev => prev.map(pv => {
-            if (pv.id === vehicleId) {
-                return { ...pv, sourceUnit: unitId };
-            }
-            return pv;
-        }));
+        updateDispatchPlan(vehicleId, { sourceUnit: unitId });
     };
 
     const handleSubmitToInvoice = (vehicleId) => {
-        setPlannedVehicles(prev => prev.map(pv => {
-            if (pv.id === vehicleId) {
-                return { ...pv, stage: 'SUBMITTED' };
-            }
-            return pv;
-        }));
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+        updateDispatchPlan(vehicleId, { stage: 'SUBMITTED' });
         showAlert("Vehicle submitted to Sales Invoice tab.");
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     // Real Excel Export using xlsx
@@ -133,7 +110,7 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
 
         // Prepare Data for Excel
         const data = plannedVehicles.map(v => {
-            const currentLoad = v.assignedOrders.reduce((sum, o) => sum + o.qty, 0);
+            const currentLoad = v.assignedOrders.reduce((sum, o) => sum + (Number(o.qty) || 0), 0);
             const utilization = Math.round((currentLoad / v.capacity) * 100);
             const orderDetails = v.assignedOrders.map(o => `${o.customer} (${o.qty}MT)`).join("; ");
 
@@ -179,14 +156,7 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
         showAlert("Dispatch Plan downloaded successfully.");
     };
 
-    // Mock Save Plan
-    const handleSavePlan = () => {
-        if (plannedVehicles.length === 0) {
-            showAlert("Plan is empty. Assign orders first.");
-            return;
-        }
-        showAlert("Dispatch Plan Saved Successfully!");
-    };
+    // Mock Save Plan removed (Auto-saved)
 
     return (
         <div className="flex h-[calc(100vh-200px)] gap-6">
@@ -232,9 +202,6 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
                         <button onClick={handleExportExcel} className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm">
                             <Download size={16} /> Export Excel
                         </button>
-                        <button onClick={handleSavePlan} className="flex items-center gap-2 px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm">
-                            <Save size={16} /> Save Plan
-                        </button>
                     </div>
                 </div>
 
@@ -276,9 +243,10 @@ const DispatchPlanner = ({ orders, vehicles, plannedVehicles, setPlannedVehicles
                                                 </select>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-6">
+                                        <div className="flex items-center gap-6 flex-shrink-0">
                                             <button
                                                 onClick={() => handleSubmitToInvoice(vehicle.id)}
+                                                disabled={isSubmitting}
                                                 className="flex items-center gap-2 px-3 py-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg text-xs font-bold transition-colors"
                                                 title="Submit to Invoice Generation"
                                             >

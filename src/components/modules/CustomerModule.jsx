@@ -19,7 +19,7 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
     const [formData, setFormData] = useState({});
 
     // Sales Orders State
-    const { orders: salesOrders, setOrders: setSalesOrders } = useSales();
+    const { orders: salesOrders, setOrders: setSalesOrders, addOrder, updateOrderStatus } = useSales();
     const [soSubTab, setSoSubTab] = useState('PENDING'); // 'PENDING' or 'HISTORY'
     const [soSearchTerm, setSoSearchTerm] = useState('');
     const [isCreatingSo, setIsCreatingSo] = useState(false);
@@ -153,15 +153,14 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
             setSoItems(prev => prev.filter(item => item.id !== id));
         }
     };
-    const handleSaveSo = () => {
+    const handleSaveSo = async () => {
         if (!soFormData.customerId || !soFormData.deliveryLocation) {
             showAlert("Please select Customer and Delivery Location.");
             return;
         }
 
-        const newSo = {
+        const currentData = {
             ...soFormData,
-            id: soFormData.id || `SO-${Date.now()}`,
             soNo: soFormData.soNo || `SO-${Date.now().toString().slice(-6)}`,
             items: soItems,
             totals: { subTotal, tradeDiscountAmount, cashDiscountAmount, netAmount },
@@ -173,28 +172,37 @@ const CustomerModule = ({ addLog, showAlert, showConfirm }) => {
             region: soFormData.deliveryLocation // Map location to region for now or fetch actual region if available
         };
 
-        if (soFormData.id) {
-            setSalesOrders(prev => prev.map(so => so.id === soFormData.id ? newSo : so));
-            showAlert("Sales Order updated successfully.");
-        } else {
-            setSalesOrders(prev => [newSo, ...prev]);
-            showAlert("Sales Order saved successfully.");
-        }
+        try {
+            if (soFormData.id) {
+                // Update Existing (id is UUID)
+                await updateOrderStatus(soFormData.id, currentData.status, currentData);
+                showAlert("Sales Order updated successfully.");
+            } else {
+                // Create New - DB requires explicit ID (TEXT PK)
+                const newId = crypto.randomUUID();
+                await addOrder({ ...currentData, id: newId });
+                showAlert("Sales Order saved successfully.");
+            }
 
-        setIsCreatingSo(false);
-        // Reset form data after save
-        setSoFormData({
-            soNo: '',
-            soDate: new Date().toISOString().split('T')[0],
-            paymentMode: 'Credit',
-            deliveryLocation: '',
-            mobileNo: '',
-            customerId: '',
-            customerName: '',
-            tradeDiscountPercent: 10,
-            cashDiscountPercent: 0
-        });
-        setSoItems([{ id: 1, material: '', hsn: '23099031', bags: 0, bagWeight: 25, totalQty: 0, rate: 0, amount: 0 }]);
+            setIsCreatingSo(false);
+            // Reset form data after save
+            setSoFormData({
+                soNo: '',
+                soDate: new Date().toISOString().split('T')[0],
+                paymentMode: 'Credit',
+                deliveryLocation: '',
+                mobileNo: '',
+                customerId: '',
+                customerName: '',
+                tradeDiscountPercent: 10,
+                cashDiscountPercent: 0
+            });
+            setSoItems([{ id: 1, material: '', hsn: '23099031', bags: 0, bagWeight: 25, totalQty: 0, rate: 0, amount: 0 }]);
+
+        } catch (error) {
+            console.error('Save failed:', error);
+            showAlert("Failed to save order. " + (error.message || 'Unknown error'));
+        }
     };
 
     const handleEditSo = (so) => {

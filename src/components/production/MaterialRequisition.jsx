@@ -12,6 +12,7 @@ const MaterialRequisition = ({ showAlert }) => {
     const historyMRs = getAllMRs().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     const [reqId, setReqId] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     useEffect(() => {
         if (currentLocation && currentUnit) {
@@ -35,6 +36,8 @@ const MaterialRequisition = ({ showAlert }) => {
     };
 
     const handleSubmit = (formData) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
         createMR(formData);
         showAlert(`Requisition ${formData.id} Submitted Successfully!`);
 
@@ -42,6 +45,7 @@ const MaterialRequisition = ({ showAlert }) => {
         const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
         const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
         setReqId(`MR-${currentLocation.id}-${currentUnit.id}-${dateStr}-${random}`);
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (

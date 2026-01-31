@@ -4,42 +4,19 @@ import { useWarehouse } from '../../contexts/WarehouseContext';
 import DumpingEntryForm from '../forms/DumpingEntryForm';
 
 const DumpingEntry = ({ showAlert }) => {
-    const { getOpenMRs, updateBinStock } = useWarehouse();
+    const { getAllMRs, updateBinStock, updateMRStatus } = useWarehouse();
 
     // Filter history MRs
-    const historyMRs = getOpenMRs().filter(mr => mr.status === 'IN_PROGRESS' || mr.status === 'CLOSED');
+    const historyMRs = getAllMRs().filter(mr => mr.status === 'IN_PROGRESS' || mr.status === 'CLOSED');
 
     const [viewMode, setViewMode] = useState('entry'); // 'entry', 'history', 'view_details'
     const [viewData, setViewData] = useState(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     const handleViewDetails = (mr) => {
-        // Need to adapt MR data to fit form expectations if needed
-        // For dumping, we might want to see the "Dumped Items" details
-        // The MR object contains the items list, which might be partially dumped or fully dumped
-        // We will just pass the MR object and let the form display what it can, or maybe display items list
-        // Note: DumpingEntryForm handles single item entry.
-        // For View History, we probably want to see the list of items dumped for this MR?
-        // Or if we track individual dumps, we should show that.
-        // The current history table shows MRs.
-        // Let's pass the MR to the form. But the form acts as a "Dumping action" form.
-        // If we want to view an MR's dumping status, maybe we need a slightly different view or adapt the form.
-        // Actually, the form shows "Source Selection" and "Target Bin".
-        // If we pass an MR, we can populate the ID.
-        // But an MR has multiple items.
-        // Let's assume for now we just show the MR details in read-only.
         setViewData(mr);
         setViewMode('view_details');
     };
-
-    // NOTE: The current DumpingEntryForm is designed for *single action* (one item per submission).
-    // The history table shows MRs.
-    // When viewing an MR, we might want to see *what* was dumped.
-    // The previous code didn't really track "Dump Transactions" separate from MR status upgrades.
-    // It just updated Bin Stock.
-    // If we want to see "What bin was this dumped into?", we need to have stored that linkage.
-    // The current data model (`warehouseItems` / `bins`) updates state but might not link back to MR explicitly in a "dump log".
-    // However, for this task, I will provide the read-only view of the MR data itself using the form structure where applicable.
-    // Or better, I'll pass the MR data to `DumpingEntryForm` as initialData to show headers.
 
     const handleBackToHistory = () => {
         setViewData(null);
@@ -47,13 +24,26 @@ const DumpingEntry = ({ showAlert }) => {
     };
 
     const handleSubmit = (formData) => {
-        // 1. Deduct from Source Bay
-        updateBinStock(formData.item.sourceBay, formData.qty, formData.item.name, 'REMOVE');
+        if (isSubmitting) return;
+        setIsSubmitting(true);
 
-        // 2. Add to Target Bin
-        updateBinStock(formData.binId, formData.qty, formData.item.name, 'ADD');
+        // 1. Deduct from Source Bay (Pass UOM)
+        updateBinStock(formData.item.sourceBay, formData.qty, formData.item.name, 'REMOVE', null, formData.item.uom);
+
+        // 2. Add to Target Bin (Pass UOM for conversion)
+        updateBinStock(formData.binId, formData.qty, formData.item.name, 'ADD', null, formData.item.uom);
+
+        // 3. Update MR Status to IN_PROGRESS so it shows in history
+        updateMRStatus(formData.mr.id, 'IN_PROGRESS', {
+            action: 'DUMP',
+            item: formData.item.name,
+            qty: formData.qty,
+            bin: formData.binId,
+            timestamp: new Date().toISOString()
+        });
 
         showAlert(`Successfully Dumped ${formData.qty} ${formData.item.uom} of ${formData.item.name} from ${formData.item.sourceBay} into ${formData.binId}`);
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (

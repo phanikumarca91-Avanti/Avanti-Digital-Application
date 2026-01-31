@@ -13,16 +13,19 @@ import StatusBadge from '../shared/StatusBadge';
 import { useWarehouse } from '../../contexts/WarehouseContext';
 import { useProduction } from '../../contexts/ProductionContext';
 import { useOrganization } from '../../contexts/OrganizationContext';
+import { useVehicles } from '../../contexts/VehicleContext';
 import UserManualModal from '../shared/UserManualModal';
 import { HelpCircle } from 'lucide-react';
 
 // StatusBadge Component
 // StatusBadge Component imported from Shared
 
-const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
+const WarehouseModule = ({ showAlert }) => {
+    const { vehicles, updateVehicle } = useVehicles();
+    const safeVehicles = vehicles || [];
     const { getOpenMRs, updateBinStock, seedBins, bays, getAllMRs, assignInwardBay } = useWarehouse();
-    const { getLotsByStatus, updateLotStatus, updateLotDetails, lots } = useProduction();
-    const { currentUnit } = useOrganization(); // Import Organization Context
+    const { getLotsByStatus, updateLotStatus, updateLot, updateLotDetails, lots } = useProduction();
+    const { currentUnit } = useOrganization();
 
     const [activeTab, setActiveTab] = useState('RAW_MATERIAL');
     const [subTab, setSubTab] = useState('PENDING');
@@ -30,6 +33,7 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
     const [showBayDialog, setShowBayDialog] = useState(false);
     const [selectedVehicleForBay, setSelectedVehicleForBay] = useState(null);
     const [selectedLotForBay, setSelectedLotForBay] = useState(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Camera State
     const [showCamera, setShowCamera] = useState(false);
@@ -52,18 +56,29 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
     const [viewBayDetails, setViewBayDetails] = useState(null); // For BayDetailsModal
 
     // Filter vehicles for Unit Allocation (QC Approved but no Unit)
-    const pendingAllocation = vehicles.filter(v => v.status === 'PENDING_UNIT_ALLOCATION');
+    const pendingAllocation = safeVehicles.filter(v => v.status === 'PENDING_UNIT_ALLOCATION');
 
     // Filter vehicles for Inward (Pending Bay Assignment) - MUST HAVE UNIT
-    const pendingInwardVehicles = vehicles.filter(v =>
+    const pendingInwardVehicles = safeVehicles.filter(v =>
         (v.status === 'AT_WAREHOUSE' || v.status === 'QC_APPROVED' || v.status === 'PENDING_UNIT_ALLOCATION') && v.unit
     );
 
     // Filter Lots for FG Placement (Pending Bay Assignment)
     const pendingFGLots = getLotsByStatus('APPROVED');
 
+    // Filter Vehicles for Sales Dispatch Loading Confirmation
+    const pendingDispatchLoading = safeVehicles.filter(v => v.status === 'SALES_AT_LOADING');
+
+    // Filter Raw Material History logic
+    const historyVehicles = safeVehicles
+        .filter(v => (v.type === 'MATERIAL' || !v.type) && v.assignedBay)
+        .sort((a, b) => new Date(b.bayAssignedAt || b.entryTime) - new Date(a.bayAssignedAt || a.entryTime));
+
+    // Filter MR History
+    const mrHistory = getAllMRs().filter(mr => mr.status === 'CLOSED').sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
+
     // Lorry Yard Visibility (Read Only)
-    const lorryYardVehicles = vehicles.filter(v =>
+    const lorryYardVehicles = safeVehicles.filter(v =>
         (v.registerId === 'lorry_yard' || v.origin === 'lorry_yard') &&
         !['AT_WAREHOUSE', 'BAY_ASSIGNED', 'QC_APPROVED', 'COMPLETED', 'AT_SECURITY_OUT', 'RETURN_COMPLETED', 'PENDING_UNIT_ALLOCATION', 'AT_SECURITY_GATE_ENTRY'].includes(v.status)
     );
@@ -94,43 +109,121 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
     const fgBays = bays.filter(b => b.id.startsWith('FG') && b.type === 'BAY' && filterByUnit(b) && filterBySearch(b));
 
 
+    // Helper to match legacy prop signature
+    const updateStatus = (id, status, data, logAction) => {
+        updateVehicle(id, { status, ...data }, logAction ? {
+            stage: 'WAREHOUSE',
+            action: logAction,
+            timestamp: new Date().toISOString(),
+            user: 'WAREHOUSE_MGR'
+        } : null);
+    };
+
     // Unit Allocation Handler
     const handleUnitAssign = (vehicleId, unit) => {
         if (!unit) {
             showAlert("Please select a valid unit.");
             return;
         }
-        // MANDATORY VERIFICATION
-        const vehicle = vehicles.find(v => v.id === vehicleId);
+        const vehicle = safeVehicles.find(v => v.id === vehicleId);
         setEditingVehicle(vehicle);
-        setPendingAction({ type: 'ASSIGN_UNIT', vehicleId, unit });
-        setShowEditModal(true);
         setPendingAction({ type: 'ASSIGN_UNIT', vehicleId, unit });
         setShowEditModal(true);
     };
 
-    // Handler for Bay Selection (RM)
-    const handleBayClick = (bay) => {
-        if (!selectedVehicleForBay) return;
+    const handleCameraTrigger = (e, id, type) => {
+        if (e) e.stopPropagation();
+        setCurrentCam({ id, type });
+        setShowCamera(true);
+    };
 
+    const handlePhotoCapture = (imageData) => {
+        if (!currentCam) return;
+        const { id, type } = currentCam;
+
+        if (type === 'VEHICLE') {
+            const vehicle = safeVehicles.find(v => v.id === id);
+            if (vehicle) {
+                const currentAttachments = vehicle.attachments || [];
+                updateVehicle(id, { attachments: [...currentAttachments, imageData] }, {
+                    stage: 'WAREHOUSE',
+                    action: 'Captured Photo',
+                    timestamp: new Date().toISOString(),
+                    user: 'WAREHOUSE_MGR'
+                });
+            }
+        } else if (type === 'LOT') {
+            const lot = lots.find(l => l.id === id);
+            if (lot) {
+                const currentAttachments = lot.attachments || [];
+                updateLotStatus(id, lot.status, { attachments: [...currentAttachments, imageData] });
+            }
+        }
+        showAlert("Photo captured!");
+    };
+
+    const handleAssignBay = (vehicleId, bayId) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
+        updateStatus(vehicleId, 'BAY_ASSIGNED', {
+            assignedBay: bayId,
+            bayAssignedAt: new Date().toISOString()
+        }, `Assigned to Bay ${bayId}`);
+
+        if (assignInwardBay) {
+            assignInwardBay(bayId, selectedVehicleForBay);
+        }
+        showAlert(`Assigned ${selectedVehicleForBay.vehicleNo} to Bay ${bayId}`);
+        setSelectedVehicleForBay(null);
+        setTimeout(() => setIsSubmitting(false), 1000);
+    };
+
+    const handleAssignFGBay = (lotId, bayId) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
+        // Update Warehouse Stock (Physical Move)
+        if (selectedLotForBay) {
+            updateBinStock(
+                bayId,
+                selectedLotForBay.producedQty || selectedLotForBay.qty || 0,
+                selectedLotForBay.fgName || selectedLotForBay.productName,
+                'ADD',
+                selectedLotForBay.grade,
+                selectedLotForBay.uom // Pass UOM for conversion
+            );
+
+            // Update Lot Status to STORED so it moves to History
+            // Use updateLot to ensure assignedBay is saved at root level
+            updateLot(lotId, {
+                status: 'STORED',
+                assignedBay: bayId,
+                bayAssignedAt: new Date().toISOString()
+            });
+        }
+
+        showAlert(`Lot ${selectedLotForBay?.lotNumber || lotId} assigned to Bay ${bayId}`);
+        setSelectedLotForBay(null);
+        setTimeout(() => setIsSubmitting(false), 1000);
+    };
+
+    const handleConfirmDispatch = (vehicleId) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+        updateStatus(vehicleId, 'SALES_AT_WEIGHBRIDGE_2', {}, 'Dispatch Loading Confirmed');
+        showAlert("Loading Confirmed. Vehicle sent to Weighbridge for Gross Weight.");
+        setTimeout(() => setIsSubmitting(false), 1000);
+    };
+
+    const handleBayClick = (bay) => {
+        if (!selectedVehicleForBay && !selectedLotForBay) return;
         if (bay.status === 'OCCUPIED') {
             showAlert("This bay is already occupied.");
             return;
         }
-
-        // 1. Update Vehicle Status
-        updateStatus(selectedVehicleForBay.id, 'BAY_ASSIGNED', {
-            assignedBay: bay.id,
-            bayAssignedAt: new Date().toISOString()
-        }, `Assigned to Bay ${bay.id}`);
-
-        // 2. Update Bay Status in Context (if applicable)
-        if (assignInwardBay) {
-            assignInwardBay(bay.id, selectedVehicleForBay);
-        }
-
-        showAlert(`Assigned ${selectedVehicleForBay.vehicleNo} to Bay ${bay.id}`);
-        setSelectedVehicleForBay(null);
+        setSelectedBay(bay);
+        setShowBayDialog(true);
     };
 
     return (
@@ -514,6 +607,42 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
                                     )}
                                 </div>
                             </div>
+
+                            {/* Dispatch Loading Confirmation */}
+                            <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden">
+                                <div className="bg-blue-50 px-6 py-4 border-b border-blue-100">
+                                    <h3 className="font-bold text-blue-800 flex items-center gap-2">
+                                        <Truck size={20} /> Pending Dispatch Loading
+                                    </h3>
+                                </div>
+                                <div className="p-4">
+                                    {pendingDispatchLoading.length > 0 ? (
+                                        <div className="space-y-4">
+                                            {pendingDispatchLoading.map(v => (
+                                                <div key={v.id} className="p-4 rounded-xl border border-blue-100 bg-white shadow-sm">
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <h4 className="font-bold text-slate-800">{v.vehicleNo}</h4>
+                                                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-bold">LOADING</span>
+                                                    </div>
+                                                    <p className="text-sm text-slate-600 mb-1">Items: {v.desc || 'Feed Bags'}</p>
+                                                    <div className="flex justify-between items-center mt-3">
+                                                        <span className="text-xs text-slate-500">{v.orders?.length || 0} Orders</span>
+                                                        <button
+                                                            onClick={() => handleConfirmDispatch(v.id)}
+                                                            disabled={isSubmitting}
+                                                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                                                        >
+                                                            <CheckCircle size={14} /> Confirm Loading
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="text-center py-6 text-slate-400">No vehicles currently loading.</div>
+                                    )}
+                                </div>
+                            </div>
                         </div>
 
                         {/* FG Bay Map */}
@@ -573,193 +702,207 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
                             </div>
                         </div>
                     </div>
-                )}
+                )
+                }
 
-                {activeTab === 'FINISHED_GOODS' && subTab === 'HISTORY' && (
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
-                            <h3 className="font-bold text-slate-800 flex items-center gap-2"><History size={18} /> Finished Goods Storage History</h3>
-                        </div>
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-slate-50 border-b border-slate-200">
-                                    <tr>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Date Stored</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Lot No</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Product</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Storage Location</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Quantity</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Photos</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {fgHistory.length === 0 ? (
+                {
+                    activeTab === 'FINISHED_GOODS' && subTab === 'HISTORY' && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><History size={18} /> Finished Goods Storage History</h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm">
+                                    <thead className="bg-slate-50 border-b border-slate-200">
                                         <tr>
-                                            <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No finished goods history found.</td>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Date Stored</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Lot No</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Product</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Storage Location</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Quantity</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Photos</th>
                                         </tr>
-                                    ) : (
-                                        fgHistory.map(lot => (
-                                            <tr key={lot.id} className="hover:bg-slate-50">
-                                                <td className="px-6 py-4 text-slate-500">{lot.bayAssignedAt ? new Date(lot.bayAssignedAt).toLocaleDateString() : '-'}</td>
-                                                <td className="px-6 py-4 font-medium text-slate-900">{lot.lotNumber}</td>
-                                                <td className="px-6 py-4 text-slate-500">{lot.productName}</td>
-                                                <td className="px-6 py-4 font-mono font-bold text-brand-600">{lot.assignedBay}</td>
-                                                <td className="px-6 py-4 font-mono text-slate-600">{lot.producedQty} kg</td>
-                                                <td className="px-6 py-4">
-                                                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                        STORED
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4">
-                                                    {lot.attachments && lot.attachments.length > 0 ? (
-                                                        <button
-                                                            onClick={() => setViewPhotos(lot.attachments)}
-                                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200"
-                                                        >
-                                                            <Camera size={12} /> ({lot.attachments.length})
-                                                        </button>
-                                                    ) : '-'}
-                                                </td>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {fgHistory.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No finished goods history found.</td>
                                             </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
+                                        ) : (
+                                            fgHistory.map(lot => (
+                                                <tr key={lot.id} className="hover:bg-slate-50">
+                                                    <td className="px-6 py-4 text-slate-500">{lot.bayAssignedAt ? new Date(lot.bayAssignedAt).toLocaleDateString() : '-'}</td>
+                                                    <td className="px-6 py-4 font-medium text-slate-900">{lot.lotNumber}</td>
+                                                    <td className="px-6 py-4 text-slate-500">{lot.fgName || lot.productName || '-'}</td>
+                                                    <td className="px-6 py-4 font-mono font-bold text-brand-600">{lot.assignedBay}</td>
+                                                    <td className="px-6 py-4 font-mono text-slate-600">{lot.producedQty || lot.qty || 0} kg</td>
+                                                    <td className="px-6 py-4">
+                                                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                                                            STORED
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {lot.attachments && lot.attachments.length > 0 ? (
+                                                            <button
+                                                                onClick={() => setViewPhotos(lot.attachments)}
+                                                                className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-bold hover:bg-blue-200"
+                                                            >
+                                                                <Camera size={12} /> ({lot.attachments.length})
+                                                            </button>
+                                                        ) : '-'}
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    </div>
-                )}
+                    )
+                }
 
 
-                {activeTab === 'STORES' && (
-                    <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200">
-                        <Wrench size={48} className="mx-auto text-slate-300 mb-4" />
-                        <h3 className="text-lg font-bold text-slate-700">Stores & Spares</h3>
-                        <p className="text-slate-500">Module under development.</p>
-                    </div>
-                )}
-
-                {activeTab === 'BAY_STATUS' && (
-                    <WarehouseLayout />
-                )}
-
-                {activeTab === 'PRODUCTION_MR' && subTab === 'PENDING' && (
-                    <WarehouseBayAssignment showAlert={showAlert} />
-                )}
-
-                {activeTab === 'PRODUCTION_MR' && subTab === 'HISTORY' && (
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
-                            <h3 className="font-bold text-slate-800 flex items-center gap-2"><History size={18} /> Production MR History</h3>
+                {
+                    activeTab === 'STORES' && (
+                        <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200">
+                            <Wrench size={48} className="mx-auto text-slate-300 mb-4" />
+                            <h3 className="text-lg font-bold text-slate-700">Stores & Spares</h3>
+                            <p className="text-slate-500">Module under development.</p>
                         </div>
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-slate-50 border-b border-slate-200">
-                                    <tr>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Date</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">MR Number</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Requested By</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Department</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
-                                        <th className="px-6 py-4 font-semibold text-slate-700">Completion Time</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {mrHistory.length === 0 ? (
+                    )
+                }
+
+                {
+                    activeTab === 'BAY_STATUS' && (
+                        <WarehouseLayout />
+                    )
+                }
+
+                {
+                    activeTab === 'PRODUCTION_MR' && subTab === 'PENDING' && (
+                        <WarehouseBayAssignment showAlert={showAlert} />
+                    )
+                }
+
+                {
+                    activeTab === 'PRODUCTION_MR' && subTab === 'HISTORY' && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2"><History size={18} /> Production MR History</h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm">
+                                    <thead className="bg-slate-50 border-b border-slate-200">
                                         <tr>
-                                            <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No MR history found.</td>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Date</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">MR Number</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Requested By</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Department</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
+                                            <th className="px-6 py-4 font-semibold text-slate-700">Completion Time</th>
                                         </tr>
-                                    ) : (
-                                        mrHistory.map(mr => (
-                                            <tr key={mr.id} className="hover:bg-slate-50">
-                                                <td className="px-6 py-4 text-slate-500">{new Date(mr.createdAt).toLocaleDateString()}</td>
-                                                <td className="px-6 py-4 font-medium text-slate-900">{mr.mrNumber}</td>
-                                                <td className="px-6 py-4 text-slate-500">{mr.requestedBy}</td>
-                                                <td className="px-6 py-4 text-slate-500">{mr.department}</td>
-                                                <td className="px-6 py-4">
-                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${mr.status === 'CLOSED' ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'}`}>
-                                                        {mr.status}
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4 text-slate-500">{mr.closedAt ? new Date(mr.closedAt).toLocaleString() : '-'}</td>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {mrHistory.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No MR history found.</td>
                                             </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
+                                        ) : (
+                                            mrHistory.map(mr => (
+                                                <tr key={mr.id} className="hover:bg-slate-50">
+                                                    <td className="px-6 py-4 text-slate-500">{new Date(mr.createdAt).toLocaleDateString()}</td>
+                                                    <td className="px-6 py-4 font-medium text-slate-900">{mr.mrNumber || mr.id}</td>
+                                                    <td className="px-6 py-4 text-slate-500">{mr.requestedBy || '-'}</td>
+                                                    <td className="px-6 py-4 text-slate-500">{mr.department || '-'}</td>
+                                                    <td className="px-6 py-4">
+                                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${mr.status === 'CLOSED' ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'}`}>
+                                                            {mr.status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-4 text-slate-500">{mr.closedAt ? new Date(mr.closedAt).toLocaleString() : '-'}</td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                    </div>
-                )}
-            </div>
+                    )
+                }
+            </div >
 
             {/* Bay Assignment Dialog */}
-            {showBayDialog && selectedBay && (selectedVehicleForBay || selectedLotForBay) && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-scale-in">
-                        <h3 className="text-xl font-bold text-slate-800 mb-4">Confirm Bay Assignment</h3>
-                        <div className="space-y-4 mb-6">
-                            <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                                {selectedVehicleForBay ? (
-                                    <>
-                                        <div className="flex justify-between mb-2">
-                                            <span className="text-slate-500 text-sm">Vehicle No</span>
-                                            <span className="font-bold text-slate-800">{selectedVehicleForBay.vehicleNo}</span>
-                                        </div>
-                                        <div className="flex justify-between mb-2">
-                                            <span className="text-slate-500 text-sm">Material</span>
-                                            <span className="font-bold text-slate-800">{selectedVehicleForBay.materialName}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span className="text-slate-500 text-sm">Net Weight</span>
-                                            <span className="font-bold text-slate-800">{selectedVehicleForBay.netWeight} kg</span>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <>
-                                        <div className="flex justify-between mb-2">
-                                            <span className="text-slate-500 text-sm">Lot Number</span>
-                                            <span className="font-bold text-slate-800">{selectedLotForBay.lotNumber}</span>
-                                        </div>
-                                        <div className="flex justify-between mb-2">
-                                            <span className="text-slate-500 text-sm">Product</span>
-                                            <span className="font-bold text-slate-800">{selectedLotForBay.productName}</span>
-                                        </div>
-                                        <div className="flex justify-between">
-                                            <span className="text-slate-500 text-sm">Quantity</span>
-                                            <span className="font-bold text-slate-800">{selectedLotForBay.producedQty} kg</span>
-                                        </div>
-                                    </>
-                                )}
+            {
+                showBayDialog && selectedBay && (selectedVehicleForBay || selectedLotForBay) && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-scale-in">
+                            <h3 className="text-xl font-bold text-slate-800 mb-4">Confirm Bay Assignment</h3>
+                            <div className="space-y-4 mb-6">
+                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                                    {selectedVehicleForBay ? (
+                                        <>
+                                            <div className="flex justify-between mb-2">
+                                                <span className="text-slate-500 text-sm">Vehicle No</span>
+                                                <span className="font-bold text-slate-800">{selectedVehicleForBay.vehicleNo}</span>
+                                            </div>
+                                            <div className="flex justify-between mb-2">
+                                                <span className="text-slate-500 text-sm">Material</span>
+                                                <span className="font-bold text-slate-800">{selectedVehicleForBay.materialName}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-slate-500 text-sm">Net Weight</span>
+                                                <span className="font-bold text-slate-800">{selectedVehicleForBay.netWeight} kg</span>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="flex justify-between mb-2">
+                                                <span className="text-slate-500 text-sm">Lot Number</span>
+                                                <span className="font-bold text-slate-800">{selectedLotForBay.lotNumber}</span>
+                                            </div>
+                                            <div className="flex justify-between mb-2">
+                                                <span className="text-slate-500 text-sm">Product</span>
+                                                <span className="font-bold text-slate-800">{selectedLotForBay.productName}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-slate-500 text-sm">Quantity</span>
+                                                <span className="font-bold text-slate-800">{selectedLotForBay.producedQty} kg</span>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                                <div className="flex items-center justify-center gap-4 py-4 bg-brand-50 rounded-xl border border-brand-100">
+                                    <span className="text-brand-600 font-medium">Assigning to Bay</span>
+                                    <span className="text-3xl font-bold text-brand-700">{selectedBay.id}</span>
+                                </div>
                             </div>
-                            <div className="flex items-center justify-center gap-4 py-4 bg-brand-50 rounded-xl border border-brand-100">
-                                <span className="text-brand-600 font-medium">Assigning to Bay</span>
-                                <span className="text-3xl font-bold text-brand-700">{selectedBay.id}</span>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setShowBayDialog(false)}
+                                    className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (selectedVehicleForBay) {
+                                            handleAssignBay(selectedVehicleForBay.id, selectedBay.id);
+                                        } else {
+                                            handleAssignFGBay(selectedLotForBay.id, selectedBay.id);
+                                        }
+                                        setShowBayDialog(false);
+                                    }}
+                                    disabled={isSubmitting}
+                                    className="flex-1 py-3 bg-brand-600 text-white font-bold rounded-xl shadow-lg shadow-brand-500/20 hover:bg-brand-700"
+                                >
+                                    Confirm Assignment
+                                </button>
                             </div>
-                        </div>
-                        <div className="flex gap-3">
-                            <button
-                                onClick={() => setShowBayDialog(false)}
-                                className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => {
-                                    if (selectedVehicleForBay) {
-                                        handleAssignBay(selectedVehicleForBay.id, selectedBay.id);
-                                    } else {
-                                        handleAssignFGBay(selectedLotForBay.id, selectedBay.id);
-                                    }
-                                    setShowBayDialog(false);
-                                }}
-                                className="flex-1 py-3 bg-brand-600 text-white font-bold rounded-xl shadow-lg shadow-brand-500/20 hover:bg-brand-700"
-                            >
-                                Confirm Assignment
-                            </button>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {
                 showCamera && (
@@ -777,38 +920,43 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
                     />
                 )
             }
-            {showEditModal && (
-                <VehicleEditModal
-                    isOpen={showEditModal}
-                    onClose={() => { setShowEditModal(false); setEditingVehicle(null); }}
-                    vehicle={editingVehicle}
-                    title={pendingAction?.type === "ASSIGN_UNIT" ? "Verify & Assign Unit" : "Correct Vehicle Data (Warehouse)"}
-                    onSave={(id, updatedData, reason) => {
-                        let statusToUpdate = editingVehicle.status;
-                        let extraData = {};
-                        let logMessage = `Data Correction (Warehouse): ${reason}`;
+            {
+                showEditModal && (
+                    <VehicleEditModal
+                        isOpen={showEditModal}
+                        onClose={() => { setShowEditModal(false); setEditingVehicle(null); }}
+                        vehicle={editingVehicle}
+                        title={pendingAction?.type === "ASSIGN_UNIT" ? "Verify & Assign Unit" : "Correct Vehicle Data (Warehouse)"}
+                        onSave={(id, updatedData, reason) => {
+                            if (isSubmitting) return;
+                            setIsSubmitting(true);
+                            let statusToUpdate = editingVehicle.status;
+                            let extraData = {};
+                            let logMessage = `Data Correction (Warehouse): ${reason}`;
 
-                        if (pendingAction && pendingAction.vehicleId === id && pendingAction.type === 'ASSIGN_UNIT') {
-                            statusToUpdate = 'AT_SECURITY_GATE_ENTRY';
-                            extraData = {
-                                unit: pendingAction.unit,
-                                registerId: 'rm_inward',
-                                unitAssignedAt: new Date().toISOString()
-                            };
-                            logMessage = `Unit ${pendingAction.unit} Assigned & Data Verified: ${reason}`;
-                        }
+                            if (pendingAction && pendingAction.vehicleId === id && pendingAction.type === 'ASSIGN_UNIT') {
+                                statusToUpdate = 'AT_SECURITY_GATE_ENTRY';
+                                extraData = {
+                                    unit: pendingAction.unit,
+                                    registerId: 'rm_inward',
+                                    unitAssignedAt: new Date().toISOString()
+                                };
+                                logMessage = `Unit ${pendingAction.unit} Assigned & Data Verified: ${reason}`;
+                            }
 
-                        updateStatus(id, statusToUpdate, { ...updatedData, ...extraData }, logMessage);
+                            updateStatus(id, statusToUpdate, { ...updatedData, ...extraData }, logMessage);
 
-                        if (pendingAction?.type === 'ASSIGN_UNIT') {
-                            showAlert(`Unit ${pendingAction.unit} assigned. Vehicle moved to Security Gate.`);
-                        } else {
-                            showAlert("Vehicle data corrected.");
-                        }
-                        setPendingAction(null);
-                    }}
-                />
-            )}
+                            if (pendingAction?.type === 'ASSIGN_UNIT') {
+                                showAlert(`Unit ${pendingAction.unit} assigned. Vehicle moved to Security Gate.`);
+                            } else {
+                                showAlert("Vehicle data corrected.");
+                            }
+                            setPendingAction(null);
+                            setTimeout(() => setIsSubmitting(false), 1000);
+                        }}
+                    />
+                )
+            }
 
             {/* Log Viewer Modal */}
             <LogViewerModal
@@ -818,95 +966,97 @@ const WarehouseModule = ({ vehicles = [], updateStatus, showAlert }) => {
                 title="Vehicle Audit Logs (Warehouse)"
             />
             {/* Bay Details Modal for Reporting */}
-            {viewBayDetails && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
-                        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                            <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                                <Box className="text-brand-600" size={20} />
-                                Bay Details: {viewBayDetails.id}
-                            </h3>
-                            <button
-                                onClick={() => setViewBayDetails(null)}
-                                className="p-1 hover:bg-slate-200 rounded-full text-slate-500 transition-colors"
-                            >
-                                <X size={20} />
-                            </button>
-                        </div>
-
-                        <div className="p-6 space-y-4">
-                            <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
-                                <span className="text-sm text-slate-500">Status</span>
-                                <span className={`font-bold px-2 py-1 rounded text-xs ${viewBayDetails.status === 'OCCUPIED'
-                                    ? 'bg-red-100 text-red-700'
-                                    : 'bg-green-100 text-green-700'
-                                    }`}>
-                                    {viewBayDetails.status}
-                                </span>
+            {
+                viewBayDetails && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
+                        <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                    <Box className="text-brand-600" size={20} />
+                                    Bay Details: {viewBayDetails.id}
+                                </h3>
+                                <button
+                                    onClick={() => setViewBayDetails(null)}
+                                    className="p-1 hover:bg-slate-200 rounded-full text-slate-500 transition-colors"
+                                >
+                                    <X size={20} />
+                                </button>
                             </div>
 
-                            {viewBayDetails.status === 'OCCUPIED' ? (
-                                <>
-                                    <div className="space-y-1">
-                                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Material / Product</label>
-                                        <p className="font-medium text-slate-800 text-lg border-b border-slate-100 pb-2">
-                                            {viewBayDetails.material || 'N/A'}
-                                        </p>
-                                    </div>
+                            <div className="p-6 space-y-4">
+                                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
+                                    <span className="text-sm text-slate-500">Status</span>
+                                    <span className={`font-bold px-2 py-1 rounded text-xs ${viewBayDetails.status === 'OCCUPIED'
+                                        ? 'bg-red-100 text-red-700'
+                                        : 'bg-green-100 text-green-700'
+                                        }`}>
+                                        {viewBayDetails.status}
+                                    </span>
+                                </div>
 
-                                    <div className="grid grid-cols-2 gap-4">
+                                {viewBayDetails.status === 'OCCUPIED' ? (
+                                    <>
                                         <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Quantity</label>
-                                            <p className="font-semibold text-slate-700">
-                                                {parseFloat(viewBayDetails.qty).toFixed(3)} {viewBayDetails.uom || 'MT'}
-                                                <span className="text-sm text-slate-500 font-normal ml-2">
-                                                    ({viewBayDetails.totalBags !== undefined ? viewBayDetails.totalBags.toLocaleString() : calculateBags(viewBayDetails.qty || 0, viewBayDetails.material, viewBayDetails.grade)} Bags)
-                                                </span>
-                                            </p>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Batch / Lot No</label>
-                                            <p className="font-mono text-slate-600 bg-slate-50 px-2 py-1 rounded inline-block text-sm">
-                                                {viewBayDetails.batchId || 'N/A'}
+                                            <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Material / Product</label>
+                                            <p className="font-medium text-slate-800 text-lg border-b border-slate-100 pb-2">
+                                                {viewBayDetails.material || 'N/A'}
                                             </p>
                                         </div>
 
-                                        {viewBayDetails.shift && (
+                                        <div className="grid grid-cols-2 gap-4">
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Shift</label>
-                                                <p className="font-semibold text-slate-700 text-sm">
-                                                    {viewBayDetails.shift}
+                                                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Quantity</label>
+                                                <p className="font-semibold text-slate-700">
+                                                    {parseFloat(viewBayDetails.qty).toFixed(3)} {viewBayDetails.uom || 'MT'}
+                                                    <span className="text-sm text-slate-500 font-normal ml-2">
+                                                        ({viewBayDetails.totalBags !== undefined ? viewBayDetails.totalBags.toLocaleString() : calculateBags(viewBayDetails.qty || 0, viewBayDetails.material, viewBayDetails.grade)} Bags)
+                                                    </span>
                                                 </p>
                                             </div>
-                                        )}
-                                    </div>
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Batch / Lot No</label>
+                                                <p className="font-mono text-slate-600 bg-slate-50 px-2 py-1 rounded inline-block text-sm">
+                                                    {viewBayDetails.batchId || 'N/A'}
+                                                </p>
+                                            </div>
 
-                                    <div className="pt-4 border-t border-slate-100">
-                                        <div className="flex items-center gap-2 text-xs text-slate-400">
-                                            <History size={12} />
-                                            <span>Last Updated: {new Date(viewBayDetails.lastUpdated).toLocaleString()}</span>
+                                            {viewBayDetails.shift && (
+                                                <div className="space-y-1">
+                                                    <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Shift</label>
+                                                    <p className="font-semibold text-slate-700 text-sm">
+                                                        {viewBayDetails.shift}
+                                                    </p>
+                                                </div>
+                                            )}
                                         </div>
-                                    </div>
-                                </>
-                            ) : (
-                                <div className="text-center py-8 text-slate-400">
-                                    <p>This bay is currently empty.</p>
-                                    <p className="text-xs mt-1">Ready for assignment.</p>
-                                </div>
-                            )}
-                        </div>
 
-                        <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
-                            <button
-                                onClick={() => setViewBayDetails(null)}
-                                className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
-                            >
-                                Close
-                            </button>
+                                        <div className="pt-4 border-t border-slate-100">
+                                            <div className="flex items-center gap-2 text-xs text-slate-400">
+                                                <History size={12} />
+                                                <span>Last Updated: {new Date(viewBayDetails.lastUpdated).toLocaleString()}</span>
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="text-center py-8 text-slate-400">
+                                        <p>This bay is currently empty.</p>
+                                        <p className="text-xs mt-1">Ready for assignment.</p>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+                                <button
+                                    onClick={() => setViewBayDetails(null)}
+                                    className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
         </div >
     );
 };

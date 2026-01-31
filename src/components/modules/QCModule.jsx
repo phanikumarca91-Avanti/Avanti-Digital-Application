@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, CheckCircle, XCircle, AlertTriangle, FileText, Package, Beaker, Camera, Download, History } from 'lucide-react';
 import { useProduction } from '../../contexts/ProductionContext';
+import { useVehicles } from '../../contexts/VehicleContext';
 import CameraCapture from '../shared/CameraCapture';
 import PhotoGalleryModal from '../shared/PhotoGalleryModal';
 import VehicleEditModal from '../shared/VehicleEditModal';
@@ -9,17 +10,31 @@ import StatusBadge from '../shared/StatusBadge';
 import UserManualModal from '../shared/UserManualModal';
 import { HelpCircle } from 'lucide-react';
 
-const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
+const QCModule = ({ showAlert }) => {
+    const { vehicles, updateVehicle } = useVehicles();
     const [activeTab, setActiveTab] = useState('INWARD');
     const [subTab, setSubTab] = useState('PENDING'); // PENDING or HISTORY
     const { lots, updateLotStatus, updateLotDocument } = useProduction();
 
+    // Helper compatibility function
+    const updateStatus = (id, status, data, logAction) => {
+        updateVehicle(id, { status, ...data }, logAction ? {
+            stage: 'QC',
+            action: logAction,
+            timestamp: new Date().toISOString(),
+            user: 'QC_OFFICER'
+        } : null);
+    };
+
+    // Safe access to vehicles
+    const safeVehicles = vehicles || [];
+
     // Inward QC Data
-    const pendingQC1 = vehicles.filter(v => v.status === 'AT_QC_1');
-    const pendingQC2 = vehicles.filter(v => v.status === 'AT_QC_2' || v.status === 'BAY_ASSIGNED');
-    const historyQC = vehicles.filter(v =>
+    const pendingQC1 = safeVehicles.filter(v => v.status === 'AT_QC_1');
+    const pendingQC2 = safeVehicles.filter(v => v.status === 'AT_QC_2' || v.status === 'BAY_ASSIGNED');
+    const historyQC = safeVehicles.filter(v =>
         ['AT_WEIGHBRIDGE_1', 'AT_SECURITY_REJECT_IN', 'AT_ERP', 'AT_WEIGHBRIDGE_2', 'COMPLETED'].includes(v.status) &&
-        (v.logs.some(l => l.stage === 'QC'))
+        (v.logs?.some(l => l.stage === 'QC'))
     );
 
     const [qcData, setQcData] = useState({ remarks: '', location: 'Unit-1' });
@@ -33,6 +48,8 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
     // Data Correction State
     const [showEditModal, setShowEditModal] = useState(false);
     const [editingVehicle, setEditingVehicle] = useState(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const [pendingAction, setPendingAction] = useState(null); // { type: 'APPROVE', vehicleId, data }
 
     const fileInputRef1 = useRef(null);
@@ -41,7 +58,7 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
 
     // FG QC Data
     const pendingFGLots = lots.filter(l => l.status === 'PENDING_QA');
-    const historyFGLots = lots.filter(l => l.status === 'APPROVED' || l.status === 'REJECTED');
+    const historyFGLots = lots.filter(l => ['APPROVED', 'REJECTED', 'STORED', 'DISPATCHED'].includes(l.status));
     const [fgQcData, setFgQcData] = useState({ protein: '', moisture: '', oil: '', sand: '', remarks: '', approvedRegion: ['ALL'] });
 
     const handleFileTrigger = (vehicleId, type, fileRef) => {
@@ -63,34 +80,20 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
         const { id, type } = currentCam;
 
         if (type === 'FG') {
-            // Handle Lot Attachments (FG) - Need to update Lot Context? 
-            // Ideally useProduction should expose storage update. 
-            // For now assuming lots are in-memory or need logic similar to updateLotDocument.
-            // Im implementing a local update helper for now or just calling updateLotDocument with a special key?
-            // Actually, lets assume updateLotDocument can handle 'attachments' array or just store directly.
-            // But existing updateLotDocument takes (id, type, object).
-            // Let's assume we update the lot object directly via updateLotStatus (which merges data).
-
-            // Simplification: We need a way to modify lots. `updateLotStatus` takes (id, status, data). 
-            // But we might not want to change status.
-            // Let's modify useProduction or just use a helper here if lots was state.
-            // `lots` comes from `useProduction`.
-            // I will ignore FG camera for a moment or try to implement it if I see `useProduction` logic.
-            // Looking at `updateLotDocument` in `QCModule`, it calls `updateLotDocument`. 
-            // I'll stick to Vehicles first.
-            // Wait, the user asked for "All Modules".
-
-            // For FG, I'll alert implementation pending or try to update.
-            // Assuming existing lot update logic.
+            // Pending FG Implementation
         } else {
             // Vehicle Attachments
-            setVehicles(prev => prev.map(v => {
-                if (v.id === id) {
-                    const currentAttachments = v.attachments || [];
-                    return { ...v, attachments: [...currentAttachments, imageData] };
-                }
-                return v;
-            }));
+            const vehicle = safeVehicles.find(v => v.id === id);
+            if (vehicle) {
+                const currentAttachments = vehicle.attachments || [];
+                const newAttachments = [...currentAttachments, imageData];
+                updateVehicle(id, { attachments: newAttachments }, {
+                    stage: 'QC',
+                    action: 'Photo Attached',
+                    timestamp: new Date().toISOString(),
+                    user: 'QC_OFFICER'
+                });
+            }
         }
         showAlert("Photo captured and attached!");
     };
@@ -110,24 +113,26 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
         } else {
             // Handle Vehicle QC Uploads
             const documentKey = type === 'QC1' ? 'labReport' : 'supportingDoc';
-            setVehicles(prev => prev.map(v => {
-                if (v.id === id) {
-                    const currentDocs = v.documents || {};
-                    return {
-                        ...v,
-                        documents: {
-                            ...currentDocs,
-                            [documentKey]: {
-                                name: file.name,
-                                uploadedAt: new Date().toLocaleString(),
-                                url: URL.createObjectURL(file) // Create a temporary URL for preview if needed
-                            }
-                        },
-                        logs: [...(v.logs || []), { time: new Date().toLocaleString(), action: `Uploaded document: ${file.name} (${documentKey})`, stage: 'QC' }]
-                    };
-                }
-                return v;
-            }));
+            const vehicle = safeVehicles.find(v => v.id === id);
+
+            if (vehicle) {
+                const currentDocs = vehicle.documents || {};
+                const newDocs = {
+                    ...currentDocs,
+                    [documentKey]: {
+                        name: file.name,
+                        uploadedAt: new Date().toLocaleString(),
+                        url: URL.createObjectURL(file)
+                    }
+                };
+
+                updateVehicle(id, { documents: newDocs }, {
+                    stage: 'QC',
+                    action: `Uploaded document: ${file.name} (${documentKey})`,
+                    timestamp: new Date().toISOString(),
+                    user: 'QC_OFFICER'
+                });
+            }
         }
 
         showAlert(`Document "${file.name}" uploaded successfully.`);
@@ -136,55 +141,50 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
     };
 
     const handleQC1Submit = (id, decision) => {
+        if (isSubmitting) return;
+
         // Remarks mandatory for non-ACCEPT decisions
         if (decision !== 'ACCEPT' && (!qcData.remarks || !qcData.remarks.trim())) {
             showAlert("QC Remarks are mandatory. Please enter details before submitting.");
             return;
         }
 
-        if (decision === 'ACCEPT') {
-            // MANDATORY VERIFICATION: Open Edit Modal first
-            const vehicle = vehicles.find(v => v.id === id);
+        if (decision === 'ACCEPT' || decision === 'REJECT') {
+            const vehicle = safeVehicles.find(v => v.id === id);
             setEditingVehicle(vehicle);
             setPendingAction({
-                type: 'APPROVE',
+                type: decision === 'ACCEPT' ? 'APPROVE' : 'REJECT',
                 vehicleId: id,
                 qcData: {
-                    qc1Status: 'ACCEPTED',
+                    qc1Status: decision === 'ACCEPT' ? 'ACCEPTED' : 'REJECTED',
                     qc1Remarks: qcData.remarks
                 }
             });
             setShowEditModal(true);
-            return; // Stop here. Modal onSave will handle the rest.
-        } else if (decision === 'REJECT') {
-            // MANDATORY VERIFICATION for REJECTION
-            const vehicle = vehicles.find(v => v.id === id);
-            setEditingVehicle(vehicle);
-            setPendingAction({
-                type: 'REJECT',
-                vehicleId: id,
-                qcData: { qc1Status: 'REJECTED', qc1Remarks: qcData.remarks }
-            });
-            setShowEditModal(true);
             return;
         } else if (decision === 'BANDAPURAM') {
+            setIsSubmitting(true);
             updateStatus(id, 'AT_ERP', { qc1Status: 'BANDAPURAM', unit: 'Bandapuram', qc1Remarks: qcData.remarks });
+            setTimeout(() => setIsSubmitting(false), 2000); // Reset delay
         }
         setQcData({ remarks: '', location: 'Unit-1' });
     };
 
     const handleQC2Submit = (id, decision) => {
+        if (isSubmitting) return;
+
         if (!qcData.remarks || !qcData.remarks.trim()) {
             showAlert("QC Remarks are mandatory. Please enter details before submitting.");
             return;
         }
 
-        const vehicle = vehicles.find(v => v.id === id);
+        const vehicle = safeVehicles.find(v => v.id === id);
         if (decision === 'REJECT' && !vehicle?.documents?.supportingDoc) {
             showAlert("Supporting Document upload is mandatory for Final QC Rejection.");
             return;
         }
 
+        setIsSubmitting(true);
         if (decision === 'ACCEPT') {
             updateStatus(id, 'AT_WEIGHBRIDGE_2', { qc2Status: 'ACCEPTED', qc2Remarks: qcData.remarks });
         } else if (decision === 'REJECT') {
@@ -198,18 +198,27 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
             showAlert("Vehicle marked 'Under Observation'. Proceeding to Tare Weighment and Provisional GRN.");
         }
         setQcData({ remarks: '', location: 'Unit-1' });
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     const handleFGSubmit = (lotId, decision) => {
+        if (isSubmitting) return;
+
         if (!fgQcData.protein || !fgQcData.moisture) {
             showAlert("Protein and Moisture are mandatory fields.");
             return;
         }
 
+        setIsSubmitting(true);
         updateLotStatus(lotId, decision, fgQcData);
         showAlert(`Lot ${lotId} marked as ${decision}`);
         setFgQcData({ protein: '', moisture: '', oil: '', sand: '', remarks: '', approvedRegion: ['ALL'] });
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
+
+    // ... (UI Rendering) ...
+    // Update Modal onSave
+
 
     return (
         <div className="space-y-6">
@@ -702,6 +711,9 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
                     vehicle={editingVehicle}
                     title={pendingAction?.type === "APPROVE" ? "Verify & Approve (QC)" : pendingAction?.type === "REJECT" ? "Verify & Reject (QC)" : "Correct Vehicle Data (QC)"}
                     onSave={(id, updatedData, reason) => {
+                        if (isSubmitting) return;
+                        setIsSubmitting(true);
+
                         let statusToUpdate = editingVehicle.status;
                         let extraData = {};
                         let logMessage = `Data Correction (QC): ${reason}`;
@@ -728,6 +740,7 @@ const QCModule = ({ vehicles, setVehicles, updateStatus, showAlert }) => {
                             showAlert("Vehicle data corrected and logged successfully.");
                         }
                         setPendingAction(null);
+                        setTimeout(() => setIsSubmitting(false), 1000);
                     }}
                 />
             )}

@@ -8,6 +8,7 @@ const ProductionEntry = ({ showAlert }) => {
 
     const [viewMode, setViewMode] = useState('entry'); // 'entry', 'history', 'view_details'
     const [viewData, setViewData] = useState(null);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     // Sort logic from original: Unassigned first? No, history is assigned ones.
     const historyLots = lots.filter(l => l.status !== 'UNASSIGNED').sort((a, b) => new Date(b.lotDate) - new Date(a.lotDate));
@@ -23,6 +24,8 @@ const ProductionEntry = ({ showAlert }) => {
     };
 
     const handleSubmit = (formData) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
         updateLotDetails(formData.lotId, {
             fgName: formData.fgName,
             shift: formData.shift,
@@ -32,6 +35,7 @@ const ProductionEntry = ({ showAlert }) => {
         });
 
         showAlert(`Production Recorded! Lot ${formData.lotId} assigned to ${formData.fgName} (${formData.qty} MT).`);
+        setTimeout(() => setIsSubmitting(false), 1000);
     };
 
     return (

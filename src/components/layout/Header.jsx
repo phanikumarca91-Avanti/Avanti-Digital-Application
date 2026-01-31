@@ -2,8 +2,12 @@ import React from 'react';
 import { Bell, Search, Settings, MapPin, ChevronDown } from 'lucide-react';
 import { useOrganization } from '../../contexts/OrganizationContext';
 import BackupRestoreControl from '../shared/BackupRestoreControl';
+import DataMigration from '../admin/DataMigration';
+import { OfflineIndicator } from '../shared/OfflineIndicator';
+import { SyncStatusPanel } from '../shared/SyncStatusPanel';
 
 const Header = ({ activeTab }) => {
+    const [showSyncPanel, setShowSyncPanel] = React.useState(false);
     const { currentLocation, currentUnit, changeLocation, changeUnit, locations } = useOrganization();
 
     const getTitle = () => {
@@ -59,6 +63,13 @@ const Header = ({ activeTab }) => {
                     </div>
                 </div>
 
+                {/* Offline Indicator */}
+                <div onClick={() => setShowSyncPanel(true)} className="cursor-pointer hover:bg-slate-50 rounded-lg transition-colors p-1" title="Click to view sync status">
+                    <OfflineIndicator />
+                </div>
+
+                <SyncStatusPanel isOpen={showSyncPanel} onClose={() => setShowSyncPanel(false)} />
+
                 <div className="h-8 w-px bg-slate-200"></div>
 
                 {/* Actions */}
@@ -71,6 +82,7 @@ const Header = ({ activeTab }) => {
                         <Settings size={20} />
                     </button>
                     <BackupRestoreControl />
+                    <DataMigration />
                     <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 font-bold text-sm border-2 border-white shadow-sm">
                         JD
                     </div>

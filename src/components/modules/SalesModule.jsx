@@ -1,27 +1,27 @@
 import React, { useState } from 'react';
-import { ShoppingCart, Truck, Map, FileText, Package } from 'lucide-react';
+import { ShoppingCart, Truck, Map, FileText, Package, RefreshCcw, AlertCircle } from 'lucide-react';
 import DispatchPlanner from '../sales/DispatchPlanner';
 import SalesInvoiceGenerator from '../sales/SalesInvoiceGenerator';
 import { useSales } from '../../contexts/SalesContext';
 import { useProduction } from '../../contexts/ProductionContext';
+import { useVehicles } from '../../contexts/VehicleContext';
 
-const SalesModule = ({ showAlert, vehicles, setVehicles }) => {
+const SalesModule = ({ showAlert }) => {
     const [activeTab, setActiveTab] = useState('DISPATCH_PLAN'); // Default to Dispatch Plan as per user focus
-    const { orders, setOrders, plannedVehicles, setPlannedVehicles } = useSales();
-    // Removed vehicles from useSales to avoid shadowing props. If SalesContext vehicles are needed (e.g. Master Fleet), rename them.
-    // However, DispatchPlanner uses 'vehicles' prop. DispatchPlanner likely needs Master Fleet from SalesContext?
-    // Let's check DispatchPlanner usage. It uses 'vehicles' passed to it.
-    // If DispatchPlanner needs Master Fleet, we should get that from useSales and rename it.
-    // But for 'Call for Vehicle' (Active Gate Transactions), we need App State.
-
-    // Let's assume DispatchPlanner uses Master Fleet.
-    const { vehicles: fleetVehicles } = useSales();
-    // We will pass fleetVehicles to DispatchPlanner, but 'vehicles' (App State) to SalesInvoiceGenerator?
-    // Actually, DispatchPlanner uses it for "Available Vehicles" list. That should be Fleet.
-
-    // Wait, the original code had: const { ..., vehicles, setVehicles, ... } = useSales();
-    // I should rename the prop 'vehicles' to 'appVehicles' or similar to avoid confusion, OR rename the context one.
-    // Let's rename Context one to 'fleetVehicles'.
+    const {
+        orders,
+        updateOrderStatus,
+        plannedVehicles,
+        // setPlannedVehicles, // Deprecated, removed
+        vehicles: fleetVehicles,
+        error,
+        refreshOrders,
+        isLoading,
+        addToDispatchPlan,
+        updateDispatchPlan,
+        removeFromDispatchPlan
+    } = useSales();
+    const { vehicles: appVehicles, addVehicle, updateVehicle } = useVehicles();
     const { lots } = useProduction();
 
     return (
@@ -32,7 +32,26 @@ const SalesModule = ({ showAlert, vehicles, setVehicles }) => {
                     <h1 className="text-2xl font-bold text-slate-800">Sales & Dispatch</h1>
                     <p className="text-slate-500">Manage orders, plan dispatch, and track fleet.</p>
                 </div>
+                <button
+                    onClick={() => refreshOrders(true)}
+                    disabled={isLoading}
+                    className={`flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50 text-sm font-medium transition-colors ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                    <RefreshCcw size={16} className={isLoading ? 'animate-spin' : ''} />
+                    {isLoading ? 'Syncing...' : 'Refresh Sync'}
+                </button>
             </div>
+
+            {/* Error Banner */}
+            {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-3">
+                    <AlertCircle size={20} />
+                    <div>
+                        <p className="font-bold">Sync Error</p>
+                        <p className="text-sm">{error}</p>
+                    </div>
+                </div>
+            )}
 
             {/* Navigation Tabs */}
             <div className="flex gap-2 border-b border-slate-200">
@@ -114,8 +133,10 @@ const SalesModule = ({ showAlert, vehicles, setVehicles }) => {
                         orders={orders}
                         vehicles={fleetVehicles}
                         plannedVehicles={plannedVehicles}
-                        setPlannedVehicles={setPlannedVehicles}
-                        onUpdateOrders={setOrders}
+                        addToDispatchPlan={addToDispatchPlan}
+                        updateDispatchPlan={updateDispatchPlan}
+                        removeFromDispatchPlan={removeFromDispatchPlan}
+                        updateOrderStatus={updateOrderStatus}
                         showAlert={showAlert}
                     />
                 )}
@@ -123,12 +144,14 @@ const SalesModule = ({ showAlert, vehicles, setVehicles }) => {
                 {activeTab === 'INVOICES' && (
                     <SalesInvoiceGenerator
                         plannedVehicles={plannedVehicles}
-                        setPlannedVehicles={setPlannedVehicles}
+                        updateDispatchPlan={updateDispatchPlan}
+                        removeFromDispatchPlan={removeFromDispatchPlan}
                         lots={lots}
                         showAlert={showAlert}
                         // Pass Main App State for Gate Entry
-                        appVehicles={vehicles}
-                        setAppVehicles={setVehicles}
+                        appVehicles={appVehicles}
+                        addVehicle={addVehicle}
+                        updateVehicle={updateVehicle}
                     />
                 )}
 
@@ -136,7 +159,7 @@ const SalesModule = ({ showAlert, vehicles, setVehicles }) => {
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
                         <h3 className="font-bold text-lg mb-4">Vehicle Status</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {vehicles.map(vehicle => {
+                            {fleetVehicles.map(vehicle => {
                                 const isAssigned = plannedVehicles.some(pv => pv.id === vehicle.id);
                                 const status = isAssigned ? 'ASSIGNED' : vehicle.status;
 

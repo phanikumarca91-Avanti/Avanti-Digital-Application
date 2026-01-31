@@ -80,7 +80,9 @@ const MaterialRequisitionForm = ({
             shift,
             fgs: selectedFGs,
             items,
-            unit: currentUnit?.name
+            unit: currentUnit?.name,
+            requestedBy: 'Admin User', // Placeholder until Auth context provides name
+            department: 'Production'
         };
 
         if (onSubmit) {

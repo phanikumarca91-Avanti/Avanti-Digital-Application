@@ -1,17 +1,25 @@
-import React from 'react';
-import { ShieldCheck, ClipboardCheck, Scale, Warehouse, Factory, FileText, Settings, LogOut, Database, Users, Truck, ShoppingBag, UserCheck } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { ShieldCheck, ClipboardCheck, Scale, Warehouse, Factory, FileText, Settings, LogOut, Database, Users, Truck, ShoppingBag, UserCheck, Key } from 'lucide-react';
 import { useWarehouse } from '../../contexts/WarehouseContext';
 import { useProduction } from '../../contexts/ProductionContext';
+import { useAuth } from '../../contexts/AuthContext';
 import ClearDataButton from '../shared/ClearDataButton';
 
-const Sidebar = ({ activeTab, setActiveTab, user, counts }) => {
+const ROLE_ACCESS = {
+    ADMIN: 'ALL',
+    SECURITY: ['SECURITY'],
+    WEIGHBRIDGE: ['WEIGHBRIDGE'],
+    QC: ['QC'],
+    STORE: ['WAREHOUSE', 'MATERIALS', 'SUPPLIERS'],
+    PRODUCTION: ['PRODUCTION', 'MATERIAL_HOD'],
+    SALES: ['SALES', 'CUSTOMERS'], // REPORTS removed as per previous step
+    ERP: ['ERP']
+};
+
+const Sidebar = ({ activeTab, setActiveTab, counts, onChangePassword }) => {
+    const { user, logout } = useAuth();
     const { getOpenMRs, getPendingInwardVehicles } = useWarehouse();
     const { getLotsByStatus } = useProduction();
-
-    // Calculate Badge Counts using props from App.jsx (Sync Source) or Context where appropriate
-
-    // Security: Vehicles waiting for Exit or Rejected Entry
-    const securityBadge = counts?.security || 0;
 
     // QC: QC1, QC2
     const qcBadge = counts?.qc || 0;
@@ -25,14 +33,17 @@ const Sidebar = ({ activeTab, setActiveTab, user, counts }) => {
     // Material HOD: Pending Approval
     const hodBadge = counts?.hod || 0;
 
-    // Warehouse: Pending Bay Assign (Inward - from App.jsx) + Pending Dumping (Production - from Context) + Pending FG Placement (Production - from Context)
+    // Security: Vehicles waiting for Exit or Rejected Entry
+    const securityBadge = counts?.security || 0;
+
+    // Warehouse Logic
     const openMRs = getOpenMRs();
     const pendingBayAssign = openMRs.filter(mr => mr.status === 'PENDING_BAY_ASSIGNMENT').length;
-    const pendingInward = counts?.warehouse || 0; // Use App.jsx count for consistency
+    const pendingInward = counts?.warehouse || 0;
     const pendingFGPlacement = getLotsByStatus('PENDING_QA').length;
     const warehouseBadgeCount = pendingBayAssign + pendingInward + pendingFGPlacement;
 
-    // Production: Pending Dumping + Unassigned Lots
+    // Production Logic
     const pendingDumping = openMRs.filter(mr => mr.status === 'PENDING_DUMPING').length;
     const unassignedLots = getLotsByStatus('UNASSIGNED').length;
     const productionBadgeCount = pendingDumping + unassignedLots;
@@ -85,7 +96,25 @@ const Sidebar = ({ activeTab, setActiveTab, user, counts }) => {
         { id: 'MATERIALS', label: 'Material Master', icon: Database },
         { id: 'SUPPLIERS', label: 'Supplier Master', icon: Truck },
         { id: 'REPORTS', label: 'Reports & Logs', icon: FileText },
+        { id: 'USERS', label: 'User Management', icon: Settings }, // Admin Only managed by ROLE_ACCESS or filter
     ];
+
+    // Filter Menu Items based on Role or Custom Access
+    const visibleMenuItems = menuItems.filter(item => {
+        if (!user) return false;
+
+        // Custom Access Override (DB Column allowed_modules)
+        if (user.allowed_modules && user.allowed_modules.length > 0) {
+            // Support explicit 'ALL' or specific IDs
+            if (user.allowed_modules.includes('ALL')) return true;
+            return user.allowed_modules.includes(item.id);
+        }
+
+        // Fallback to Default Role Access
+        if (user.role === 'ADMIN') return true;
+        const allowed = ROLE_ACCESS[user.role] || [];
+        return allowed.includes(item.id);
+    });
 
     return (
         <div className="w-64 bg-slate-900 text-white flex flex-col h-screen fixed left-0 top-0 shadow-xl z-50">
@@ -103,9 +132,9 @@ const Sidebar = ({ activeTab, setActiveTab, user, counts }) => {
             {/* Navigation */}
             <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4 px-2">
-                    Main Menu
+                    Main Menu ({user?.role || 'User'})
                 </div>
-                {menuItems.map((item) => (
+                {visibleMenuItems.map((item) => (
                     <button
                         key={item.id}
                         onClick={() => setActiveTab(item.id)}
@@ -141,17 +170,32 @@ const Sidebar = ({ activeTab, setActiveTab, user, counts }) => {
             <div className="p-4 border-t border-slate-800 bg-slate-900/50">
                 <div className="flex items-center gap-3 px-2 mb-3">
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-sm font-bold shadow-lg">
-                        {user?.name?.charAt(0) || 'U'}
+                        {user?.fullName?.charAt(0) || user?.username?.charAt(0) || 'U'}
                     </div>
                     <div className="flex-1 min-w-0">
-                        <p className="text-sm font-bold truncate">{user?.name || 'User'}</p>
+                        <p className="text-sm font-bold truncate">{user?.fullName || user?.username || 'User'}</p>
                         <p className="text-xs text-slate-400 truncate">{user?.role || 'Operator'}</p>
                     </div>
                 </div>
-                <button className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
-                    <LogOut size={14} /> Sign Out
-                </button>
-                <ClearDataButton />
+
+                <div className="flex gap-2">
+                    <button
+                        onClick={onChangePassword}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors border border-slate-700 hover:border-slate-600"
+                        title="Change Password"
+                    >
+                        <Key size={14} /> Password
+                    </button>
+                    <button
+                        onClick={logout}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-400 hover:text-white hover:bg-red-600/20 rounded-lg transition-colors border border-slate-700 hover:border-red-900/50"
+                        title="Sign Out"
+                    >
+                        Sign Out
+                    </button>
+                </div>
+
+                {user?.role === 'ADMIN' && <ClearDataButton />}
             </div>
         </div>
     );
